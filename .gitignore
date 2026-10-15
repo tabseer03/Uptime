@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.tmp
+
+# Personal tracking data never belongs in the repo
+*.db
+*.db-journal
+rules.json
+*.log
