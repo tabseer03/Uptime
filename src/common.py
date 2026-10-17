@@ -17,8 +17,8 @@ MAX_GAP_SECONDS = 60        # longer than this between samples = laptop was off/
 REBOOT_TOLERANCE = 120      # boot-time difference that means a restart happened
 
 WASTED_KINDS = ("sleep", "shutdown", "locked", "distracted")
-KIND_LABELS = {"sleep": "Sleep", "shutdown": "Shut down", "locked": "Locked",
-               "distracted": "Distracted", "active": "Active", "paused": "Paused"}
+KIND_LABELS = {"sleep": "Laptop asleep", "shutdown": "Shut down", "locked": "Locked",
+               "distracted": "Distracted", "active": "Active", "paused": "Paused", "rest": "Your sleep"}
 
 # ---------------------------------------------------------------- distraction rules
 # "site" rules match the title of the active browser tab; "app" rules match the program's
@@ -89,6 +89,7 @@ DEFAULT_SETTINGS = {
     "popup_on_distraction": True,   # when a distracting app or site comes to the front
     "popup_reminder_minutes": 10,   # repeat while you stay on the distraction (0 = never)
     "ask_new": True,                # ask "is this for work?" for new apps and sites
+    "sleep_hours": 8,               # this much of each night's break is your sleep, not wasted
 }
 
 
@@ -271,12 +272,76 @@ def connect():
 
 # ---------------------------------------------------------------- analysis
 
-def build_segments(conn):
+OFF_KINDS = ("sleep", "shutdown", "locked")   # the laptop was not being used
+NIGHT_WINDOW = (0, 9)                          # a night's break overlaps 00:00-09:00 ...
+MIN_NIGHT = 3 * 3600                           # ... and lasts at least 3 hours
+
+
+def credit_your_sleep(segs, hours):
+    """Count up to `hours` of each night's longest laptop-off break as 'rest' (you asleep).
+
+    The credited part is the last `hours` before you came back; anything longer than
+    that stays wasted (laptop off, but you were up). Applies to past days too.
+    """
+    if not hours or hours <= 0:
+        return segs
+    runs, cur = [], None                       # contiguous stretches of off-time
+    for start, end, kind, _ in segs:
+        if kind in OFF_KINDS:
+            if cur and abs(cur[1] - start) < 1:
+                cur[1] = end
+            else:
+                cur = [start, end]
+                runs.append(cur)
+        else:
+            cur = None
+    nights = {}                                # morning date -> longest break that night
+    for start, end in runs:
+        if end - start < MIN_NIGHT:
+            continue
+        d = datetime.fromtimestamp(start).date()
+        while True:
+            ws = datetime.combine(d, datetime.min.time()).timestamp() + NIGHT_WINDOW[0] * 3600
+            if ws > end:
+                break
+            we = ws + (NIGHT_WINDOW[1] - NIGHT_WINDOW[0]) * 3600
+            if start < we and end > ws and end - start > nights.get(d, (0, 0, 0))[0]:
+                nights[d] = (end - start, start, end)
+            d += timedelta(days=1)
+    windows = sorted({(max(s, e - hours * 3600), e) for _, s, e in nights.values()})
+    if not windows:
+        return segs
+    out = []
+    for start, end, kind, detail in segs:
+        if kind not in OFF_KINDS:
+            out.append((start, end, kind, detail))
+            continue
+        cur = start
+        for ws, we in windows:
+            if we <= cur or ws >= end:
+                continue
+            if ws > cur:
+                out.append((cur, ws, kind, detail))
+            out.append((max(cur, ws), min(end, we), "rest", None))
+            cur = min(end, we)
+        if cur < end:
+            out.append((cur, end, kind, detail))
+    return out
+
+
+def build_segments(conn, sleep_hours=None):
     """Return a sorted list of (start, end, kind, detail) covering all tracked time.
 
-    kind is 'active', 'locked', 'distracted', 'sleep' or 'shutdown'; detail says what the
+    kind is 'active', 'locked', 'distracted', 'sleep' or 'shutdown' (the laptop asleep),
+    'rest' (you asleep, see credit_your_sleep) or 'paused'; detail says what the
     distraction was. Gaps between recorded periods are sleep (same boot) or shutdown.
     """
+    if sleep_hours is None:
+        sleep_hours = load_settings().get("sleep_hours", 8)
+    return credit_your_sleep(_raw_segments(conn), sleep_hours)
+
+
+def _raw_segments(conn):
     rows = conn.execute("SELECT start, end, state, boot, detail FROM periods ORDER BY start").fetchall()
     segs = []
     prev_end = prev_boot = None

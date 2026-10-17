@@ -57,7 +57,7 @@ ACCENT = "#60cdff"
 GOOD = "#6ccb5f"
 BAD = "#ff99a4"
 COLORS = {"sleep": ACCENT, "shutdown": "#8b8b8b", "locked": "#f9b24e", "distracted": "#f472b6",
-          "active": GOOD}
+          "active": GOOD, "rest": "#a5a8ff"}
 GLYPHS = {"sleep": "", "shutdown": "", "locked": "", "active": "",
           "clock": "", "refresh": "", "calendar": "", "week": "",
           "avg": "", "chevron": "", "empty": ""}
@@ -650,6 +650,7 @@ class Dashboard(tk.Tk):
         self.recent.pack(fill="both", expand=True)
         self.recent.columnconfigure(0, weight=1, uniform="r")
         self.recent.columnconfigure(1, weight=1, uniform="r")
+        self.recent.bind("<Configure>", self._fit_recent)  # re-fit when the window is resized
 
         for key, title in [("daily", "Daily history"), ("weekly", "Weekly history"),
                            ("breaks", "All breaks")]:
@@ -727,6 +728,9 @@ class Dashboard(tk.Tk):
         self.popups_box = tk.Frame(body, bg=SURFACE)
         self.popups_box.pack(fill="x")
         self._fill_popups()
+        self.sleep_box = tk.Frame(body, bg=SURFACE)
+        self.sleep_box.pack(fill="x")
+        self._fill_sleep()
 
         hdr = tk.Frame(body, bg=SURFACE)
         hdr.pack(fill="x", pady=(px(26), 0))
@@ -871,6 +875,44 @@ class Dashboard(tk.Tk):
                      width=4, anchor="e").pack(side="right", padx=(0, px(44)))
             self._toggle(row, on, lambda k=key: self._toggle_setting(k)).pack(side="right", padx=(px(8), px(6)))
             hoverable(row, SURFACE, SURFACE_HI)
+
+    def _fill_sleep(self):
+        box = self.sleep_box
+        for c in box.winfo_children():
+            c.destroy()
+        hours = load_settings().get("sleep_hours", 8)
+        row = tk.Frame(box, bg=SURFACE, padx=px(8), pady=px(7))
+        row.pack(fill="x")
+        icon_badge(row, GLYPHS["sleep"], COLORS["rest"] if hours else MUTED, SURFACE).pack(side="left")
+        text = tk.Frame(row, bg=SURFACE)
+        text.pack(side="left", padx=(px(12), 0), fill="x", expand=True)
+        tk.Label(text, text="Count my sleep", font=font(10), fg=TEXT if hours else MUTED, bg=SURFACE,
+                 anchor="w").pack(fill="x")
+        tk.Label(text, text="Each morning, up to this much of the night's break is your sleep, not wasted time",
+                 font=font(9), fg=MUTED, bg=SURFACE, anchor="w").pack(fill="x")
+        stepper = tk.Frame(row, bg=SURFACE)
+        stepper.pack(side="right", padx=(0, px(44)))
+        for sign, glyph in ((-1, ""), (1, "")):  # minus, plus
+            b = tk.Label(stepper, text=glyph, font=(ICON_FONT, 9), fg=TEXT, bg=SURFACE_HI,
+                         width=3, pady=px(5), cursor="hand2")
+            b.keep_bg = True
+            b.bind("<Button-1>", lambda e, s=sign: self._change_sleep(s))
+            b.bind("<Enter>", lambda e, w=b: w.config(bg="#454545"))
+            b.bind("<Leave>", lambda e, w=b: w.config(bg=SURFACE_HI))
+            if sign < 0:
+                b.pack(side="left")
+                tk.Label(stepper, text=f"{hours} h" if hours else "Off", font=font(10, "semibold"), fg=TEXT,
+                         bg=SURFACE, width=5).pack(side="left")
+            else:
+                b.pack(side="left")
+        hoverable(row, SURFACE, SURFACE_HI)
+
+    def _change_sleep(self, sign):
+        s = load_settings()
+        s["sleep_hours"] = max(0, min(12, int(s.get("sleep_hours", 8)) + sign))
+        save_settings(s)
+        self._fill_sleep()
+        self.refresh()
 
     def _fill_answers(self):
         box = self.answers_box
@@ -1075,7 +1117,10 @@ class Dashboard(tk.Tk):
         d = self.data
         today = d["days"].get(d["today"], {})
 
-        self._set_card("today", fmt_dur(wasted(today)), self._breakdown(today, limit=2) or "Nothing wasted yet")
+        note = self._breakdown(today, limit=2) or "Nothing wasted yet"
+        if today.get("rest", 0) >= 60:  # say how much sleep was left out
+            note = f"Not counting {fmt_dur(today['rest'])} of your sleep"
+        self._set_card("today", fmt_dur(wasted(today)), note)
         self._set_card("active", fmt_dur(today.get("active", 0)), "Unlocked and not distracted")
         self._set_card("avg_day", fmt_dur(d["avg_day"]), d["avg_day_basis"].capitalize())
         self._set_card("avg_week", fmt_dur(d["avg_week"]), d["avg_week_basis"].capitalize())
@@ -1135,14 +1180,33 @@ class Dashboard(tk.Tk):
     def _fill_recent(self):
         for c in self.recent.winfo_children():
             c.destroy()
-        items = list(self._break_items())[:8]
+        self.recent_rows = []
+        items = list(self._break_items())[:24]
         if not items:
             self._empty(self.recent, "Breaks will show up here once you lock or sleep your laptop.")
             return
         for i, (kind, dur, when, what) in enumerate(items):
-            row = self._row(self.recent, GLYPHS[kind], COLORS[kind], f"{fmt_dur(dur)}  ·  {what}", when)
+            title = f"{fmt_dur(dur)}  ·  {what}"
+            if len(title) > 52:  # half-width column: keep it to one tidy line
+                title = title[:50].rstrip(" ·") + "…"
+            row = self._row(self.recent, GLYPHS[kind], COLORS[kind], title, when)
             row.grid(row=i // 2, column=i % 2, sticky="ew", padx=(0, px(6)) if i % 2 == 0 else (px(6), 0))
             hoverable(row, SURFACE, SURFACE_HI)
+            self.recent_rows.append(row)
+        self.after_idle(self._fit_recent)
+
+    def _fit_recent(self, _event=None):
+        """Show only the rows of Recent breaks that fit completely; 'Show all' has the rest."""
+        rows = getattr(self, "recent_rows", [])
+        if not rows:
+            return
+        row_h = max(r.winfo_reqheight() for r in rows[:2])
+        fits = max(0, self.recent.winfo_height() // max(1, row_h))
+        for i, row in enumerate(rows):
+            if i // 2 < fits:
+                row.grid()
+            else:
+                row.grid_remove()
 
     def _fill_daily(self):
         now = datetime.now()
@@ -1157,6 +1221,8 @@ class Dashboard(tk.Tk):
             sub += f"  ·  Active {fmt_dur(s.get('active', 0))}"
             if s.get("paused", 0) >= 60:
                 sub += f"  ·  Paused {fmt_dur(s['paused'])}"
+            if s.get("rest", 0) >= 60:
+                sub += f"  ·  Your sleep {fmt_dur(s['rest'])}"
             if span - tr >= 600:
                 sub += f"  ·  Not tracked {fmt_dur(span - tr)}"
             title = "Today" if day == self.data["today"] else f"{day:%A, %d %B}"
@@ -1259,6 +1325,8 @@ class Dashboard(tk.Tk):
                  (f"Wasted {fmt_dur(wasted(stats))}", TEXT, font(9))]
         lines += [(f"{KIND_LABELS[k]}  {fmt_dur(stats.get(k, 0))}", COLORS[k], font(9)) for k in WASTED_KINDS]
         lines.append((f"Active  {fmt_dur(stats.get('active', 0))}", GOOD, font(9)))
+        if stats.get("rest", 0) >= 60:
+            lines.append((f"Your sleep  {fmt_dur(stats['rest'])}  (not wasted)", COLORS["rest"], font(9)))
         items = []
         y = top + px(6)
         for text, color, f in lines:

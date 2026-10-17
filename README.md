@@ -14,7 +14,8 @@ It turns out that seeing *"Wasted today: 6h 12m"* and *"Shopping · flipkart: 1h
 
 ## What it does
 
-- **Tracks wasted time automatically.** It counts time locked (Win+L), asleep, shut down (yes, including sleep at night), and time on distracting apps or websites.
+- **Tracks wasted time automatically.** It counts time locked (Win+L), asleep or shut down, and time on distracting apps or websites.
+- **Doesn't count your sleep.** Each morning, up to 8 hours of the night's laptop-off break counts as **Your sleep**, not wasted time (you can change the hours, or set 0 to turn it off). Stay up past that and the extra still counts.
 - **Catches distractions.** Shopping (Amazon, Flipkart, Myntra, Meesho…), social media (Instagram, Reddit…), streaming (Netflix, Hotstar…) and games count as **Distracted** time.
 - **Shows your history.** You get a 14-day chart, daily and weekly history, and a log of every break.
 - **Averages.** It shows average wasted time per day and per week.
@@ -43,7 +44,8 @@ Tracking starts right away and runs at every login. Your data stays on your lapt
 - **Background tracker.** `src/tracker.pyw` runs with no window. Every 10 seconds it records:
   - whether the session is locked, using the Windows session lock state
   - which window is in front, and whether it matches a distraction rule (websites by browser tab title, apps by program name)
-- **Sleep and shutdown.** Gaps with no recordings mean the laptop was asleep or off. If Windows restarted during the gap, it counts as **Shut down**; otherwise it counts as **Sleep**.
+- **Laptop asleep and shutdown.** Gaps with no recordings mean the laptop was asleep or off. If Windows restarted during the gap, it counts as **Shut down**; otherwise it counts as **Laptop asleep**.
+- **Your sleep.** Each night's longest off/locked break (at least 3 hours, overlapping 12 am–9 am) is treated as sleep. The last 8 hours before you came back count as **Your sleep** and aren't wasted. This applies to past days too.
 - **Pop-ups.** `src/toast.pyw` is the pop-up and `src/ask.pyw` is the "Is this for work?" prompt. Both share `src/osd.py`, which builds them directly on the Windows API rather than Tkinter: they never take focus (the prompt's buttons can be clicked without stealing focus), and they're excluded from screen capture. You can switch each one on or off in **Distractions → Pop-ups**.
 - **Websites.** `src/siteinfo.py` reads the browser's address bar through Windows UI Automation, using only `ctypes`, to find the site you're on. It only reads when you switch windows or the page changes. Your answers live in `%USERPROFILE%\Uptime\labels.json` and take priority over the keyword rules.
 - **Pause.** The dashboard's **Pause** button writes the pause end time and registers a one-time Windows Task Scheduler entry to restart the tracker. The tracker notices the pause and exits. When it restarts, it records the gap as **Paused** and removes the scheduled task. Click **Resume now** in the dashboard to end a pause early.

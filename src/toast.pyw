@@ -13,8 +13,12 @@ import sys
 import time
 from ctypes import wintypes
 
-from common import connect, fmt_dur, load_pause, wasted_today
-from osd import (ACCENT, FW_SEMIBOLD, MUTED, PINK, TEXT, OSDWindow, single_instance, user32)
+from datetime import datetime
+
+from common import MIN_NIGHT, connect, fmt_dur, load_pause, load_settings, wasted_today
+from osd import (ACCENT, FW_SEMIBOLD, MUTED, PINK, TEXT, OSDWindow, rgb, single_instance, user32)
+
+RESTING = rgb("#a5a8ff")
 
 BACK_LINES = ["Welcome back", "Back at it", "There you are"]
 NUDGES = ["Is this worth it?", "Close it and get back to work", "This is going on your record",
@@ -32,12 +36,15 @@ def message(kind, arg):
         rule, _, kw = (arg or "Distracted").partition("|")
         what = f"{rule} · {kw}" if kw else rule
         return "", PINK, f"{what}  —  {random.choice(NUDGES)}", f"{total} wasted today"
-    away = ""
     try:
-        if arg and float(arg) >= 60:
-            away = f"  ·  away {fmt_dur(float(arg))}"
+        seconds = float(arg or 0)
     except ValueError:
-        pass
+        seconds = 0
+    hours = load_settings().get("sleep_hours", 8)
+    if hours and seconds >= MIN_NIGHT and 4 <= datetime.now().hour < 14:
+        slept = fmt_dur(min(seconds, hours * 3600))
+        return "", RESTING, f"Good morning  ·  {slept} of sleep not counted", f"{total} wasted today"
+    away = f"  ·  away {fmt_dur(seconds)}" if seconds >= 60 else ""
     return "", ACCENT, random.choice(BACK_LINES) + away, f"{total} wasted today"
 
 
