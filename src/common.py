@@ -1,4 +1,5 @@
 """Shared storage and analysis for Uptime."""
+import hashlib
 import json
 import os
 import sqlite3
@@ -17,7 +18,7 @@ REBOOT_TOLERANCE = 120      # boot-time difference that means a restart happened
 
 WASTED_KINDS = ("sleep", "shutdown", "locked", "distracted")
 KIND_LABELS = {"sleep": "Sleep", "shutdown": "Shut down", "locked": "Locked",
-               "distracted": "Distracted", "active": "Active"}
+               "distracted": "Distracted", "active": "Active", "paused": "Paused"}
 
 # ---------------------------------------------------------------- distraction rules
 # "site" rules match the title of the active browser tab; "app" rules match the program's
@@ -110,6 +111,74 @@ def save_settings(settings):
     os.replace(tmp, SETTINGS_PATH)
 
 
+# ---------------------------------------------------------------- pause
+# While paused nothing of Uptime runs. pause.json says until when; a one-time Windows
+# Task Scheduler entry starts the tracker again at that time (or at the next login).
+PAUSE_PATH = os.path.join(DATA_DIR, "pause.json")
+_DEFAULT_DIR = os.path.join(os.path.expanduser("~"), "Uptime")
+TASK_NAME = "Uptime resume" + (
+    "" if os.path.normcase(DATA_DIR) == os.path.normcase(_DEFAULT_DIR)
+    else " " + hashlib.md5(os.path.normcase(DATA_DIR).encode()).hexdigest()[:8])
+CREATE_NO_WINDOW = 0x08000000
+
+
+def load_pause():
+    """{'start': ts, 'until': ts} while a pause is set, else None."""
+    try:
+        with open(PAUSE_PATH, encoding="utf-8") as f:
+            p = json.load(f)
+        return p if isinstance(p, dict) and "until" in p else None
+    except (OSError, ValueError):
+        return None
+
+
+def save_pause(start, until):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = PAUSE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"start": start, "until": until}, f)
+    os.replace(tmp, PAUSE_PATH)
+
+
+def clear_pause():
+    try:
+        os.remove(PAUSE_PATH)
+    except OSError:
+        pass
+
+
+def _powershell(script):
+    import subprocess
+    try:
+        return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                              capture_output=True, text=True, timeout=60,
+                              creationflags=CREATE_NO_WINDOW).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def schedule_resume(at, pythonw, tracker):
+    """One-time task that starts the tracker at `at` (runs late if the laptop was asleep/off)."""
+    when = datetime.fromtimestamp(at).strftime("%Y-%m-%dT%H:%M:%S")
+    q = lambda s: s.replace("'", "''")  # noqa: E731  (PowerShell single-quote escaping)
+    args = f'"{tracker}"'
+    if os.environ.get("WTT_DATA_DIR"):  # a task can't carry environment variables, so pass it on
+        args += f' --data-dir "{DATA_DIR}"'
+    return _powershell(
+        f"$a = New-ScheduledTaskAction -Execute '{q(pythonw)}' -Argument '{q(args)}' "
+        f"-WorkingDirectory '{q(os.path.dirname(tracker))}'; "
+        f"$t = New-ScheduledTaskTrigger -Once -At ([datetime]'{when}'); "
+        "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
+        "-StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero); "
+        f"Register-ScheduledTask -TaskName '{q(TASK_NAME)}' -Action $a -Trigger $t -Settings $s "
+        "-Description 'Starts Uptime again after a pause' -Force | Out-Null")
+
+
+def cancel_resume():
+    return _powershell(f"Unregister-ScheduledTask -TaskName '{TASK_NAME}' -Confirm:$false "
+                       "-ErrorAction SilentlyContinue")
+
+
 def wasted_today(conn, now=None):
     """Seconds wasted since local midnight (locked, asleep, off or distracted)."""
     now = now or time.time()
@@ -195,7 +264,7 @@ def breaks(segs):
     """
     out = []
     for start, end, kind, detail in segs:
-        if kind == "active":
+        if kind not in WASTED_KINDS:  # active or paused time is not a break
             continue
         key = (kind, detail if kind == "distracted" else None)
         if out and abs(out[-1][1] - start) < 1:

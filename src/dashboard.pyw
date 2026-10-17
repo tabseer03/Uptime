@@ -24,7 +24,8 @@ from collections import deque
 from datetime import datetime, timedelta
 
 from common import (DEFAULT_RULES, KIND_LABELS, WASTED_KINDS, connect, detail_label, fmt_dur,
-                    load_rules, load_settings, save_rules, save_settings, summary, tracked, wasted)
+                    load_pause, load_rules, load_settings, save_pause, save_rules, save_settings,
+                    schedule_resume, summary, tracked, wasted)
 
 PREVIEW = bool(os.environ.get("WTT_DATA_DIR"))  # set by preview.pyw
 
@@ -62,7 +63,9 @@ GLYPHS = {"sleep": "", "shutdown": "", "locked": "", "active": "",
           "avg": "", "chevron": "", "empty": ""}
 
 GLYPHS.update({"distracted": "", "site": "", "app": "", "delete": "",
-               "add": "", "reset": ""})
+               "add": "", "reset": "", "pause": "", "play": ""})
+PAUSED = "#f9b24e"
+PAUSE_CHOICES = (3, 4, 5)  # hours
 
 CHART_DAYS = 14
 REFRESH_MS = 60_000
@@ -525,6 +528,16 @@ class Dashboard(tk.Tk):
         self.status = tk.Canvas(bar, bg=BG, highlightthickness=0, height=px(30), width=px(10))
         self.status.pack(side="right", padx=(0, px(8)))
 
+        self.pause_btn = tk.Frame(bar, bg=SURFACE, padx=px(12), pady=px(5),
+                                  highlightthickness=1, highlightbackground=BORDER)
+        self.pause_btn.pack(side="right", padx=(0, px(8)))
+        self.pause_icon = tk.Label(self.pause_btn, text=GLYPHS["pause"], font=(ICON_FONT, 9), fg=TEXT, bg=SURFACE)
+        self.pause_icon.pack(side="left", padx=(0, px(8)))
+        self.pause_text = tk.Label(self.pause_btn, text="Pause", font=font(10), fg=TEXT, bg=SURFACE)
+        self.pause_text.pack(side="left")
+        hoverable(self.pause_btn, SURFACE, SURFACE_HI, self._pause_clicked)
+        self.pause_panel = None
+
     def _draw_status(self, text, color):
         c = self.status
         c.delete("all")
@@ -726,6 +739,100 @@ class Dashboard(tk.Tk):
         self._build_add_form(body)
         self._fill_rules()
 
+    # -------------------------------------------------------- pause
+    def _app_file(self, name):
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+
+    def _pythonw(self):
+        return os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+
+    def _pause_clicked(self):
+        if self._active_pause():
+            self._resume_now()
+        elif self.pause_panel is not None:
+            self._close_pause_panel()
+        else:
+            self._open_pause_panel()
+
+    @staticmethod
+    def _active_pause():
+        p = load_pause()
+        return p if p and time.time() < p["until"] else None
+
+    def _open_pause_panel(self):
+        card = Card(self, pad=20, color="#2f2f2f")
+        card.configure(bg=BG)
+        self.pause_panel = card
+        inner = card.inner
+        tk.Label(inner, text="Pause Uptime", font=font(13, "semibold"), fg=TEXT, bg="#2f2f2f",
+                 anchor="w").pack(fill="x")
+        tk.Label(inner, text="Uptime turns off completely: no tracking, no pop-ups and nothing running. "
+                             "It starts again by itself. Paused time doesn't count as wasted.",
+                 font=font(9), fg=TEXT2, bg="#2f2f2f", anchor="w", justify="left",
+                 wraplength=px(330)).pack(fill="x", pady=(px(6), px(14)))
+        seg = tk.Frame(inner, bg="#1f1f1f", highlightthickness=1, highlightbackground=BORDER)
+        seg.pack(fill="x")
+        self.pause_hours = PAUSE_CHOICES[0]
+        self.hour_btns = {}
+        for h in PAUSE_CHOICES:
+            b = tk.Label(seg, text=f"{h} hours", font=font(10), pady=px(6), cursor="hand2")
+            b.pack(side="left", fill="x", expand=True)
+            b.bind("<Button-1>", lambda e, h=h: self._set_pause_hours(h))
+            self.hour_btns[h] = b
+        self.pause_until = tk.Label(inner, text="", font=font(9), fg=MUTED, bg="#2f2f2f", anchor="w")
+        self.pause_until.pack(fill="x", pady=(px(8), px(14)))
+        self._set_pause_hours(self.pause_hours)
+        row = tk.Frame(inner, bg="#2f2f2f")
+        row.pack(fill="x")
+        self._pill_button(row, "Pause now", self._pause_now, GLYPHS["pause"], primary=True).pack(side="left")
+        cancel = self._pill_button(row, "Cancel", self._close_pause_panel)
+        cancel.pack(side="left", padx=(px(8), 0))
+        self.pause_msg = tk.Label(inner, text="", font=font(9), fg=MUTED, bg="#2f2f2f", anchor="w",
+                                  justify="left", wraplength=px(330))
+        self.pause_msg.pack(fill="x", pady=(px(8), 0))
+        card.place(relx=1.0, x=-px(28), y=px(78), anchor="ne", width=px(380))
+        tk.Misc.lift(card)  # raise the widget (Canvas.lift would raise a drawing item instead)
+
+    def _close_pause_panel(self):
+        if self.pause_panel is not None:
+            self.pause_panel.destroy()
+            self.pause_panel = None
+
+    def _set_pause_hours(self, h):
+        self.pause_hours = h
+        for k, b in self.hour_btns.items():
+            b.config(bg=SURFACE_HI if k == h else "#1f1f1f", fg=TEXT if k == h else MUTED)
+        until = datetime.now() + timedelta(hours=h)
+        day = "" if until.date() == datetime.now().date() else " tomorrow"
+        self.pause_until.config(text=f"Uptime will be off until {until:%H:%M}{day}.")
+
+    def _pause_now(self):
+        self.pause_msg.config(text="Pausing…", fg=MUTED)
+        self.update_idletasks()
+        start = time.time()
+        until = start + self.pause_hours * 3600
+        save_pause(start, until)                      # the tracker sees this and stops itself
+        ok = schedule_resume(until, self._pythonw(), self._app_file("tracker.pyw"))
+        if ok:
+            self.destroy()                            # turn the dashboard off too
+            return
+        self.pause_msg.config(
+            text="Paused, but Windows wouldn't schedule the automatic restart. Uptime will start "
+                 "again at your next login, or open this window and click Resume now.", fg=BAD)
+        self.after(4000, self.refresh)
+
+    def _resume_now(self):
+        p = load_pause()
+        if p:
+            save_pause(p.get("start", time.time()), time.time())  # pause ends now
+        try:
+            subprocess.Popen([self._pythonw(), self._app_file("tracker.pyw")],
+                             cwd=os.path.dirname(self._app_file("tracker.pyw")))
+        except OSError:
+            pass
+        self._draw_status("Starting…", GOOD)
+        self.after(2500, self.refresh)
+
     def _fill_popups(self):
         box = self.popups_box
         for c in box.winfo_children():
@@ -917,7 +1024,14 @@ class Dashboard(tk.Tk):
         self._set_card("avg_day", fmt_dur(d["avg_day"]), d["avg_day_basis"].capitalize())
         self._set_card("avg_week", fmt_dur(d["avg_week"]), d["avg_week_basis"].capitalize())
 
-        if d["last_heartbeat"] is None:
+        pause = self._active_pause()
+        self.pause_icon.config(text=GLYPHS["play"] if pause else GLYPHS["pause"])
+        self.pause_text.config(text="Resume now" if pause else "Pause")
+        if pause:
+            until = datetime.fromtimestamp(pause["until"])
+            day = "" if until.date() == datetime.now().date() else f" {until:%a}"
+            self._draw_status(f"Paused until {until:%H:%M}{day}", PAUSED)
+        elif d["last_heartbeat"] is None:
             self._draw_status("Not started", BAD)
         elif d["tracker_running"]:
             self._draw_status("Tracking", GOOD)
@@ -985,6 +1099,8 @@ class Dashboard(tk.Tk):
             w, tr = wasted(s), tracked(s)
             sub = self._breakdown(s) or "No wasted time"
             sub += f"  ·  Active {fmt_dur(s.get('active', 0))}"
+            if s.get("paused", 0) >= 60:
+                sub += f"  ·  Paused {fmt_dur(s['paused'])}"
             if span - tr >= 600:
                 sub += f"  ·  Not tracked {fmt_dur(span - tr)}"
             title = "Today" if day == self.data["today"] else f"{day:%A, %d %B}"

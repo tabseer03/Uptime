@@ -13,9 +13,10 @@ import ctypes
 import os
 import random
 import sys
+import time
 from ctypes import wintypes
 
-from common import connect, fmt_dur, wasted_today
+from common import connect, fmt_dur, load_pause, wasted_today
 
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -277,6 +278,9 @@ def main():
     kernel32.CreateMutexW(None, False, "Local\\UptimeToast")
     if ctypes.get_last_error() == 183:
         return
+    pause = load_pause()
+    if pause and time.time() < pause["until"]:
+        return  # paused: show nothing
     kind = sys.argv[1] if len(sys.argv) > 1 else "back"
     arg = sys.argv[2] if len(sys.argv) > 2 else None
     Toast(*message(kind, arg)).run()

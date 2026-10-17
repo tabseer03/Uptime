@@ -18,6 +18,8 @@ It turns out that seeing *"Wasted today: 6h 12m"* and *"Shopping · flipkart: 1h
 - **Catches distractions.** Shopping (Amazon, Flipkart, Myntra, Meesho…), social media (Instagram, Reddit…), streaming (Netflix, Hotstar…) and games count as **Distracted** time.
 - **Shows your history.** You get a 14-day chart, daily and weekly history, and a log of every break.
 - **Averages.** It shows average wasted time per day and per week.
+- **Nudges you with a pop-up.** A small Windows-style pop-up in the top-left corner shows *"5h 12m wasted today"* when you come back to the laptop, when you open a distraction, and every 10 minutes while you stay on one. It never takes focus, clicks pass straight through it, and it doesn't appear in screen shares or recordings.
+- **Pauses on demand.** Pause for 3, 4 or 5 hours and Uptime switches off completely, with no tracking, no pop-ups and nothing running. It starts again by itself, and paused time doesn't count as wasted.
 - **Lets you set your own rules.** Turn categories on or off, or add your own sites and apps. YouTube, messaging and music start off, because they aren't always distractions.
 - **Looks like Windows 11.** It has a dark Windows 11-style dashboard, with smooth 144 Hz scrolling that works with precision touchpads too.
 
@@ -41,6 +43,8 @@ Tracking starts right away and runs at every login. Your data stays on your lapt
   - whether the session is locked, using the Windows session lock state
   - which window is in front, and whether it matches a distraction rule (websites by browser tab title, apps by program name)
 - **Sleep and shutdown.** Gaps with no recordings mean the laptop was asleep or off. If Windows restarted during the gap, it counts as **Shut down**; otherwise it counts as **Sleep**.
+- **Pop-ups.** `src/toast.pyw` is the pop-up. It's built directly on the Windows API rather than Tkinter, so it can be click-through, never take focus, and be excluded from screen capture. You can switch each trigger on or off in **Distractions → Pop-ups**.
+- **Pause.** The dashboard's **Pause** button writes the pause end time and registers a one-time Windows Task Scheduler entry to restart the tracker. The tracker notices the pause and exits. When it restarts, it records the gap as **Paused** and removes the scheduled task. Click **Resume now** in the dashboard to end a pause early.
 - **Dashboard.** `src/dashboard.pyw` is the dashboard, built with Tkinter and drawn to match Windows 11's dark theme.
 - **Averages.** They only use full days, meaning days that were at least 90% tracked, so a half-tracked first day doesn't skew them.
 

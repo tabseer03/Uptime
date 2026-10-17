@@ -12,8 +12,12 @@ import sys
 import time
 from ctypes import wintypes
 
-from common import (DATA_DIR, HEARTBEAT_SECONDS, MAX_GAP_SECONDS, REBOOT_TOLERANCE, RULES_PATH,
-                    SETTINGS_PATH, connect, load_rules, load_settings, match_distraction)
+if "--data-dir" in sys.argv[:-1]:  # used by the scheduled restart for a non-default data folder
+    os.environ["WTT_DATA_DIR"] = sys.argv[sys.argv.index("--data-dir") + 1]
+
+from common import (DATA_DIR, HEARTBEAT_SECONDS, MAX_GAP_SECONDS, PAUSE_PATH, REBOOT_TOLERANCE,
+                    RULES_PATH, SETTINGS_PATH, cancel_resume, clear_pause, connect, load_pause,
+                    load_rules, load_settings, match_distraction)
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -204,14 +208,36 @@ class Popups:
 
 
 def wait_for_change(rules, current, seconds):
-    """Sleep up to `seconds`, waking early if the state changes (so pop-ups are prompt)."""
+    """Sleep up to `seconds`, waking early if the state changes (so pop-ups are prompt)
+    or a pause was requested."""
     for _ in range(seconds):
         time.sleep(1)
+        if os.path.exists(PAUSE_PATH):
+            return
         try:
             if sample(rules) != current:
                 return
         except Exception:
             pass
+
+
+def paused_now():
+    p = load_pause()
+    return p is not None and time.time() < p["until"]
+
+
+def resume_from_pause(conn, pause):
+    """Record the pause as 'paused' time (not wasted), then clear it and its scheduled task."""
+    now = time.time()
+    last = conn.execute("SELECT end, boot FROM periods ORDER BY id DESC LIMIT 1").fetchone()
+    start = max(pause.get("start", now), last[0] if last else 0)
+    end = min(now, pause["until"])
+    if end > start:
+        conn.execute("INSERT INTO periods (start, end, state, boot, detail) VALUES (?, ?, 'paused', ?, NULL)",
+                     (start, end, last[1] if last else boot_time()))
+        conn.commit()
+    clear_pause()
+    cancel_resume()
 
 
 def main():
@@ -221,7 +247,13 @@ def main():
     if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
         sys.exit(0)  # already running
 
+    pause = load_pause()
+    if pause and time.time() < pause["until"]:
+        sys.exit(0)  # paused: stay off (e.g. logged in during a pause)
+
     conn = connect()
+    if pause:
+        resume_from_pause(conn, pause)
     rules = Rules()
     popups = Popups()
     last = conn.execute(
@@ -229,6 +261,9 @@ def main():
     state = detail = None
 
     while True:
+        if paused_now():
+            conn.close()
+            sys.exit(0)  # the dashboard asked us to pause: turn off completely
         try:
             now = time.time()
             state, detail = sample(rules)
