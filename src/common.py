@@ -61,7 +61,7 @@ def save_rules(rules):
     os.replace(tmp, RULES_PATH)
 
 
-def match_distraction(exe, title, rules):
+def match_distraction(exe, title, rules, domain=None):
     """Return 'Rule|keyword' if the foreground window is a distraction, else None."""
     exe = exe.lower().removesuffix(".exe")
     title = title.lower()
@@ -74,7 +74,7 @@ def match_distraction(exe, title, rules):
             if not k:
                 continue
             if rule.get("type") == "site":
-                hit = in_browser and k in title
+                hit = in_browser and (k in title or (domain is not None and k in domain))
             else:
                 hit = k in exe or (exe == "applicationframehost" and k in title)
             if hit:
@@ -88,6 +88,7 @@ DEFAULT_SETTINGS = {
     "popup_on_return": True,        # after unlocking or waking the laptop
     "popup_on_distraction": True,   # when a distracting app or site comes to the front
     "popup_reminder_minutes": 10,   # repeat while you stay on the distraction (0 = never)
+    "ask_new": True,                # ask "is this for work?" for new apps and sites
 }
 
 
@@ -184,6 +185,66 @@ def wasted_today(conn, now=None):
     now = now or time.time()
     today = datetime.fromtimestamp(now).date()
     return wasted(per_day(build_segments(conn)).get(today, {}))
+
+
+# ---------------------------------------------------------------- work / not work answers
+# Your answers to "is this for work?", keyed 'site:leetcode.com' or 'app:code'.
+# They take priority over the keyword rules above.
+LABELS_PATH = os.path.join(DATA_DIR, "labels.json")
+WORK, NOT_WORK = "work", "not_work"
+NOT_WORK_RULE = "Not work"   # detail prefix for time on things you marked "not work"
+
+# Windows' own parts, and Uptime itself, are never asked about.
+IGNORED_APPS = {
+    "explorer", "searchhost", "searchapp", "searchui", "startmenuexperiencehost", "shellexperiencehost",
+    "shellhost", "lockapp", "logonui", "textinputhost", "applicationframehost", "taskmgr", "dwm",
+    "systemsettings", "rundll32", "consent", "openwith", "pickerhost", "sihost", "ctfmon",
+    "python", "pythonw", "py", "pyw", "notificationcenter", "widgets", "winlogon", "screenclippinghost",
+}
+
+
+def label_key(exe, domain):
+    """What an answer is stored under: the website in a browser, otherwise the program."""
+    stem = (exe or "").lower().removesuffix(".exe")
+    if stem in BROWSERS:
+        return f"site:{domain}" if domain else None
+    if not stem or stem in IGNORED_APPS:
+        return None
+    return f"app:{stem}"
+
+
+def key_name(key):
+    """'site:leetcode.com' -> 'leetcode.com'; 'app:code' -> 'code'."""
+    return key.split(":", 1)[1] if key and ":" in key else (key or "")
+
+
+def load_labels():
+    """{key: {"answer": WORK or NOT_WORK, "name": display name}}"""
+    try:
+        with open(LABELS_PATH, encoding="utf-8") as f:
+            labels = json.load(f)
+        return {k: v for k, v in labels.items() if isinstance(v, dict)} if isinstance(labels, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def answer_of(labels, key):
+    entry = labels.get(key) if key else None
+    return entry.get("answer") if entry else None
+
+
+def save_label(key, value, name=None):
+    """value is WORK, NOT_WORK, or None to forget the answer (it will be asked again)."""
+    labels = load_labels()
+    if value is None:
+        labels.pop(key, None)
+    else:
+        labels[key] = {"answer": value, "name": name or labels.get(key, {}).get("name") or key_name(key)}
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = LABELS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(labels, f, indent=2, sort_keys=True)
+    os.replace(tmp, LABELS_PATH)
 
 
 def detail_label(detail):

@@ -15,9 +15,11 @@ from ctypes import wintypes
 if "--data-dir" in sys.argv[:-1]:  # used by the scheduled restart for a non-default data folder
     os.environ["WTT_DATA_DIR"] = sys.argv[sys.argv.index("--data-dir") + 1]
 
-from common import (DATA_DIR, HEARTBEAT_SECONDS, MAX_GAP_SECONDS, PAUSE_PATH, REBOOT_TOLERANCE,
-                    RULES_PATH, SETTINGS_PATH, cancel_resume, clear_pause, connect, load_pause,
-                    load_rules, load_settings, match_distraction)
+from common import (BROWSERS, DATA_DIR, HEARTBEAT_SECONDS, LABELS_PATH, MAX_GAP_SECONDS, NOT_WORK,
+                    NOT_WORK_RULE, PAUSE_PATH, REBOOT_TOLERANCE, RULES_PATH, SETTINGS_PATH, WORK,
+                    answer_of, cancel_resume, clear_pause, connect, key_name, label_key, load_labels,
+                    load_pause, load_rules, load_settings, match_distraction)
+from siteinfo import SiteReader, app_name
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -99,69 +101,106 @@ def boot_time():
 
 
 def foreground_window():
-    """(program file name, window title) of the window in front, or ('', '')."""
+    """(program path, window title, window handle) of the window in front."""
     hwnd = user32.GetForegroundWindow()
     if not hwnd:
-        return "", ""
+        return "", "", None
     title = ctypes.create_unicode_buffer(512)
     user32.GetWindowTextW(hwnd, title, 512)
     pid = wintypes.DWORD()
     user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-    exe = ""
+    path = ""
     hproc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
     if hproc:
         try:
             buf = ctypes.create_unicode_buffer(1024)
             size = wintypes.DWORD(1024)
             if kernel32.QueryFullProcessImageNameW(hproc, 0, buf, ctypes.byref(size)):
-                exe = os.path.basename(buf.value)
+                path = buf.value
         finally:
             kernel32.CloseHandle(hproc)
-    return exe, title.value
+    return path, title.value, hwnd
 
 
-class Rules:
-    """Distraction rules, reloaded whenever the dashboard saves rules.json."""
+class Watched:
+    """A settings file the dashboard edits, reloaded whenever it changes on disk."""
 
-    def __init__(self):
+    def __init__(self, path, loader):
+        self.path, self.loader = path, loader
         self.mtime = None
-        self.rules = load_rules()
+        self.value = loader()
 
     def current(self):
         try:
-            mtime = os.path.getmtime(RULES_PATH)
+            mtime = os.path.getmtime(self.path)
         except OSError:
             mtime = None
         if mtime != self.mtime:
             self.mtime = mtime
-            self.rules = load_rules()
-        return self.rules
+            self.value = self.loader()
+        return self.value
 
 
-def sample(rules):
-    """Current (state, detail): locked, distracted (with what), or active."""
+class Context:
+    def __init__(self):
+        self.rules = Watched(RULES_PATH, load_rules)
+        self.labels = Watched(LABELS_PATH, load_labels)
+        self.settings = Watched(SETTINGS_PATH, load_settings)
+        self.sites = SiteReader()
+        self.names = {}
+
+    def app_name(self, path):
+        if path not in self.names:
+            self.names[path] = app_name(path)
+        return self.names[path]
+
+
+def sample(ctx):
+    """Current (state, detail, ask): locked; distracted (and by what); or active.
+    `ask` is (key, name) for an app or site you haven't said is work or not yet."""
     if is_locked():
-        return "locked", None
-    detail = match_distraction(*foreground_window(), rules.current())
-    return ("distracted", detail) if detail else ("active", None)
+        return "locked", None, None
+    path, title, hwnd = foreground_window()
+    exe = os.path.basename(path)
+    stem = exe.lower().removesuffix(".exe")
+    domain = ctx.sites.domain(hwnd, title) if stem in BROWSERS and hwnd else None
+    key = label_key(exe, domain)
+    answer = answer_of(ctx.labels.current(), key)
+    if answer == WORK:
+        return "active", None, None                      # your answer beats the keyword rules
+    if answer == NOT_WORK:
+        return "distracted", f"{NOT_WORK_RULE}|{key_name(key) if domain else ctx.app_name(path)}", None
+    detail = match_distraction(exe, title, ctx.rules.current(), domain)
+    if detail:
+        return "distracted", detail, None
+    if key is None:
+        return "active", None, None
+    return "active", None, (key, domain or ctx.app_name(path))
 
 
-class Settings:
-    """Pop-up settings, reloaded whenever the dashboard saves settings.json."""
+class Asker:
+    """Starts ask.pyw ("Is this for work?") for new apps and sites, without nagging."""
+    AGAIN_AFTER = 600      # ignored question: ask about the same thing again after 10 minutes
+    MIN_GAP = 15           # at most one new question every 15 seconds
 
-    def __init__(self):
-        self.mtime = None
-        self.values = load_settings()
+    def __init__(self, ctx):
+        self.ctx = ctx
+        self.asked = {}
+        self.last = 0.0
+        self.script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ask.pyw")
 
-    def current(self):
+    def update(self, ask, now):
+        if not ask or not self.ctx.settings.current().get("ask_new", True):
+            return
+        key, name = ask
+        if now - self.last < self.MIN_GAP or now - self.asked.get(key, 0) < self.AGAIN_AFTER:
+            return
+        self.asked[key] = self.last = now
         try:
-            mtime = os.path.getmtime(SETTINGS_PATH)
+            subprocess.Popen([sys.executable, self.script, key, name],
+                             cwd=os.path.dirname(self.script), close_fds=True)
         except OSError:
-            mtime = None
-        if mtime != self.mtime:
-            self.mtime = mtime
-            self.values = load_settings()
-        return self.values
+            pass
 
 
 class Popups:
@@ -169,8 +208,8 @@ class Popups:
     MIN_AWAY = 30          # seconds away before "welcome back" is worth showing
     MIN_GAP = 20           # never show distraction pop-ups closer together than this
 
-    def __init__(self):
-        self.settings = Settings()
+    def __init__(self, ctx):
+        self.settings = ctx.settings
         self.away_since = None
         self.last_shown = 0.0
         self.script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "toast.pyw")
@@ -207,7 +246,7 @@ class Popups:
             self.show("distracted", detail)
 
 
-def wait_for_change(rules, current, seconds):
+def wait_for_change(ctx, current, seconds):
     """Sleep up to `seconds`, waking early if the state changes (so pop-ups are prompt)
     or a pause was requested."""
     for _ in range(seconds):
@@ -215,7 +254,7 @@ def wait_for_change(rules, current, seconds):
         if os.path.exists(PAUSE_PATH):
             return
         try:
-            if sample(rules) != current:
+            if sample(ctx) != current:
                 return
         except Exception:
             pass
@@ -254,11 +293,12 @@ def main():
     conn = connect()
     if pause:
         resume_from_pause(conn, pause)
-    rules = Rules()
-    popups = Popups()
+    ctx = Context()
+    popups = Popups(ctx)
+    asker = Asker(ctx)
     last = conn.execute(
         "SELECT id, end, state, boot, detail FROM periods ORDER BY id DESC LIMIT 1").fetchone()
-    state = detail = None
+    state = detail = ask = None
 
     while True:
         if paused_now():
@@ -266,7 +306,7 @@ def main():
             sys.exit(0)  # the dashboard asked us to pause: turn off completely
         try:
             now = time.time()
-            state, detail = sample(rules)
+            state, detail, ask = sample(ctx)
             boot = boot_time()
             continuous = (last is not None and 0 <= now - last[1] <= MAX_GAP_SECONDS
                           and abs(boot - last[3]) <= REBOOT_TOLERANCE)
@@ -283,9 +323,10 @@ def main():
                 last = (cur.lastrowid, now, state, boot, detail)
             conn.commit()
             popups.update(prev, state, detail, now, continuous)
+            asker.update(ask, now)
         except Exception:
             pass  # never die on a transient error (e.g. database briefly busy)
-        wait_for_change(rules, (state, detail), HEARTBEAT_SECONDS)
+        wait_for_change(ctx, (state, detail, ask), HEARTBEAT_SECONDS)
 
 
 if __name__ == "__main__":

@@ -23,9 +23,9 @@ import tkinter as tk
 from collections import deque
 from datetime import datetime, timedelta
 
-from common import (DEFAULT_RULES, KIND_LABELS, WASTED_KINDS, connect, detail_label, fmt_dur,
-                    load_pause, load_rules, load_settings, save_pause, save_rules, save_settings,
-                    schedule_resume, summary, tracked, wasted)
+from common import (DEFAULT_RULES, KIND_LABELS, NOT_WORK, WASTED_KINDS, WORK, connect, detail_label, fmt_dur,
+                    key_name, load_labels, load_pause, load_rules, load_settings, save_label, save_pause,
+                    save_rules, save_settings, schedule_resume, summary, tracked, wasted)
 
 PREVIEW = bool(os.environ.get("WTT_DATA_DIR"))  # set by preview.pyw
 
@@ -95,6 +95,8 @@ def round_rect(c, x1, y1, x2, y2, r, **kw):
 
 def set_bg(widget, color):
     """Recolor a widget and all its (non-canvas) children, used for hover."""
+    if getattr(widget, "keep_bg", False):
+        return
     try:
         widget.configure(bg=color)
     except tk.TclError:
@@ -728,6 +730,16 @@ class Dashboard(tk.Tk):
 
         hdr = tk.Frame(body, bg=SURFACE)
         hdr.pack(fill="x", pady=(px(26), 0))
+        tk.Label(hdr, text="Your answers", font=font(12, "semibold"), fg=TEXT, bg=SURFACE).pack(side="left")
+        tk.Label(body, text="Apps and sites you've said are for work or not. Click an answer to change it, "
+                            "or delete it to be asked again. Your answers win over the rules below.",
+                 font=font(9), fg=MUTED, bg=SURFACE, anchor="w").pack(fill="x", pady=(px(4), px(10)))
+        self.answers_box = tk.Frame(body, bg=SURFACE)
+        self.answers_box.pack(fill="x")
+        self._fill_answers()
+
+        hdr = tk.Frame(body, bg=SURFACE)
+        hdr.pack(fill="x", pady=(px(26), 0))
         tk.Label(hdr, text="What counts as a distraction", font=font(12, "semibold"),
                  fg=TEXT, bg=SURFACE).pack(side="left")
         self._pill_button(hdr, "Reset to defaults", self._reset_rules, GLYPHS["reset"]).pack(side="right")
@@ -842,7 +854,9 @@ class Dashboard(tk.Tk):
         items = [("popup_on_return", GLYPHS["clock"], ACCENT, "When I come back",
                   "After unlocking or waking the laptop"),
                  ("popup_on_distraction", GLYPHS["distracted"], COLORS["distracted"], "When I open a distraction",
-                  f"And again every {mins} minutes while I stay on it" if mins else "Once each time")]
+                  f"And again every {mins} minutes while I stay on it" if mins else "Once each time"),
+                 ("ask_new", GLYPHS["site"], ACCENT, "Ask about new apps and sites",
+                  "“Is this for work?” the first time you use something new")]
         for key, glyph, color, title, sub in items:
             on = bool(s[key])
             row = tk.Frame(box, bg=SURFACE, padx=px(8), pady=px(7))
@@ -857,6 +871,48 @@ class Dashboard(tk.Tk):
                      width=4, anchor="e").pack(side="right", padx=(0, px(44)))
             self._toggle(row, on, lambda k=key: self._toggle_setting(k)).pack(side="right", padx=(px(8), px(6)))
             hoverable(row, SURFACE, SURFACE_HI)
+
+    def _fill_answers(self):
+        box = self.answers_box
+        for c in box.winfo_children():
+            c.destroy()
+        labels = load_labels()
+        if not labels:
+            tk.Label(box, text="No answers yet. Uptime will ask the first time you use a new app or site.",
+                     font=font(10), fg=MUTED, bg=SURFACE, anchor="w").pack(fill="x", padx=px(8), pady=px(6))
+            return
+        order = sorted(labels.items(), key=lambda kv: (kv[1].get("answer") != NOT_WORK, kv[1].get("name", "").lower()))
+        for key, entry in order:
+            site = key.startswith("site:")
+            work = entry.get("answer") == WORK
+            row = tk.Frame(box, bg=SURFACE, padx=px(8), pady=px(6))
+            row.pack(fill="x")
+            icon_badge(row, GLYPHS["site" if site else "app"], GOOD if work else COLORS["distracted"],
+                       SURFACE).pack(side="left")
+            text = tk.Frame(row, bg=SURFACE)
+            text.pack(side="left", padx=(px(12), 0), fill="x", expand=True)
+            tk.Label(text, text=entry.get("name") or key_name(key), font=font(10), fg=TEXT, bg=SURFACE,
+                     anchor="w").pack(fill="x")
+            tk.Label(text, text="Website" if site else "App", font=font(9), fg=MUTED, bg=SURFACE,
+                     anchor="w").pack(fill="x")
+            delete = tk.Label(row, text=GLYPHS["delete"], font=(ICON_FONT, 11), fg=MUTED, bg=SURFACE,
+                              padx=px(10), pady=px(6), cursor="hand2")
+            delete.pack(side="right")
+            delete.bind("<Button-1>", lambda e, k=key: self._set_answer(k, None))
+            delete.bind("<Enter>", lambda e, w=delete: w.config(fg=BAD))
+            delete.bind("<Leave>", lambda e, w=delete: w.config(fg=MUTED))
+            pill_bg = "#1f3a24" if work else "#3d1f30"
+            pill = tk.Label(row, text="Work" if work else "Not work", font=font(9, "semibold"),
+                            fg=GOOD if work else COLORS["distracted"], bg=pill_bg, padx=px(12), pady=px(3),
+                            cursor="hand2", width=8)
+            pill.pack(side="right", padx=(0, px(14)))
+            pill.keep_bg = True  # keeps its own colour when the row is highlighted
+            hoverable(row, SURFACE, SURFACE_HI)
+            pill.bind("<Button-1>", lambda e, k=key, w=work: self._set_answer(k, NOT_WORK if w else WORK), add="+")
+
+    def _set_answer(self, key, value):
+        save_label(key, value)
+        self._fill_answers()
 
     def _toggle_setting(self, key):
         s = load_settings()
