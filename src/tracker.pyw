@@ -7,12 +7,13 @@ shutdown) shows up as gaps, which the dashboard counts as wasted time.
 import ctypes
 import hashlib
 import os
+import subprocess
 import sys
 import time
 from ctypes import wintypes
 
 from common import (DATA_DIR, HEARTBEAT_SECONDS, MAX_GAP_SECONDS, REBOOT_TOLERANCE, RULES_PATH,
-                    connect, load_rules, match_distraction)
+                    SETTINGS_PATH, connect, load_rules, load_settings, match_distraction)
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -141,6 +142,78 @@ def sample(rules):
     return ("distracted", detail) if detail else ("active", None)
 
 
+class Settings:
+    """Pop-up settings, reloaded whenever the dashboard saves settings.json."""
+
+    def __init__(self):
+        self.mtime = None
+        self.values = load_settings()
+
+    def current(self):
+        try:
+            mtime = os.path.getmtime(SETTINGS_PATH)
+        except OSError:
+            mtime = None
+        if mtime != self.mtime:
+            self.mtime = mtime
+            self.values = load_settings()
+        return self.values
+
+
+class Popups:
+    """Decides when to show the on-screen pop-up (toast.pyw) with today's wasted time."""
+    MIN_AWAY = 30          # seconds away before "welcome back" is worth showing
+    MIN_GAP = 20           # never show distraction pop-ups closer together than this
+
+    def __init__(self):
+        self.settings = Settings()
+        self.away_since = None
+        self.last_shown = 0.0
+        self.script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "toast.pyw")
+
+    def show(self, *args):
+        self.last_shown = time.time()
+        try:
+            subprocess.Popen([sys.executable, self.script, *map(str, args)],
+                             cwd=os.path.dirname(self.script), close_fds=True)
+        except OSError:
+            pass
+
+    def update(self, prev, state, detail, now, continuous):
+        """prev is the previous (state, detail, end time) or None."""
+        s = self.settings.current()
+        if not continuous and prev is not None and self.away_since is None:
+            self.away_since = prev[2]           # asleep / shut down since the last sample
+        if state == "locked":
+            if self.away_since is None:
+                self.away_since = prev[2] if prev else now
+            return
+        if self.away_since is not None:         # just came back
+            away, self.away_since = now - self.away_since, None
+            if away >= self.MIN_AWAY and s["popup_on_return"]:
+                self.show("back", int(away))
+                return
+        if state != "distracted" or not s["popup_on_distraction"]:
+            return
+        if now - self.last_shown < self.MIN_GAP:
+            return
+        new = prev is None or prev[0] != "distracted" or prev[1] != detail or not continuous
+        remind = s["popup_reminder_minutes"] and now - self.last_shown >= 60 * s["popup_reminder_minutes"]
+        if new or remind:
+            self.show("distracted", detail)
+
+
+def wait_for_change(rules, current, seconds):
+    """Sleep up to `seconds`, waking early if the state changes (so pop-ups are prompt)."""
+    for _ in range(seconds):
+        time.sleep(1)
+        try:
+            if sample(rules) != current:
+                return
+        except Exception:
+            pass
+
+
 def main():
     # One tracker per data folder (so a preview can run next to the installed app).
     name = "Local\\UptimeTracker_" + hashlib.md5(DATA_DIR.lower().encode()).hexdigest()[:12]
@@ -150,8 +223,10 @@ def main():
 
     conn = connect()
     rules = Rules()
+    popups = Popups()
     last = conn.execute(
         "SELECT id, end, state, boot, detail FROM periods ORDER BY id DESC LIMIT 1").fetchone()
+    state = detail = None
 
     while True:
         try:
@@ -160,6 +235,7 @@ def main():
             boot = boot_time()
             continuous = (last is not None and 0 <= now - last[1] <= MAX_GAP_SECONDS
                           and abs(boot - last[3]) <= REBOOT_TOLERANCE)
+            prev = (last[2], last[4], last[1]) if last else None
             if continuous and last[2] == state and last[4] == detail:
                 conn.execute("UPDATE periods SET end = ? WHERE id = ?", (now, last[0]))
                 last = (last[0], now, state, last[3], detail)
@@ -171,9 +247,10 @@ def main():
                     (start, now, state, boot, detail))
                 last = (cur.lastrowid, now, state, boot, detail)
             conn.commit()
+            popups.update(prev, state, detail, now, continuous)
         except Exception:
             pass  # never die on a transient error (e.g. database briefly busy)
-        time.sleep(HEARTBEAT_SECONDS)
+        wait_for_change(rules, (state, detail), HEARTBEAT_SECONDS)
 
 
 if __name__ == "__main__":

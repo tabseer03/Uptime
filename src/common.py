@@ -81,6 +81,42 @@ def match_distraction(exe, title, rules):
     return None
 
 
+# ---------------------------------------------------------------- settings
+SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
+DEFAULT_SETTINGS = {
+    "popup_on_return": True,        # after unlocking or waking the laptop
+    "popup_on_distraction": True,   # when a distracting app or site comes to the front
+    "popup_reminder_minutes": 10,   # repeat while you stay on the distraction (0 = never)
+}
+
+
+def load_settings():
+    settings = dict(DEFAULT_SETTINGS)
+    try:
+        with open(SETTINGS_PATH, encoding="utf-8") as f:
+            saved = json.load(f)
+        if isinstance(saved, dict):
+            settings.update({k: v for k, v in saved.items() if k in DEFAULT_SETTINGS})
+    except (OSError, ValueError):
+        pass
+    return settings
+
+
+def save_settings(settings):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = SETTINGS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+    os.replace(tmp, SETTINGS_PATH)
+
+
+def wasted_today(conn, now=None):
+    """Seconds wasted since local midnight (locked, asleep, off or distracted)."""
+    now = now or time.time()
+    today = datetime.fromtimestamp(now).date()
+    return wasted(per_day(build_segments(conn)).get(today, {}))
+
+
 def detail_label(detail):
     """'Shopping|flipkart' -> 'Shopping · flipkart'."""
     return " · ".join(p for p in (detail or "").split("|") if p) or "Distracted"

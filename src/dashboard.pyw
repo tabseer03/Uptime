@@ -17,13 +17,14 @@ if sys.stderr is None:
 import atexit
 import ctypes
 import math
+import subprocess
 import time
 import tkinter as tk
 from collections import deque
 from datetime import datetime, timedelta
 
 from common import (DEFAULT_RULES, KIND_LABELS, WASTED_KINDS, connect, detail_label, fmt_dur,
-                    load_rules, save_rules, summary, tracked, wasted)
+                    load_rules, load_settings, save_rules, save_settings, summary, tracked, wasted)
 
 PREVIEW = bool(os.environ.get("WTT_DATA_DIR"))  # set by preview.pyw
 
@@ -702,6 +703,18 @@ class Dashboard(tk.Tk):
 
         hdr = tk.Frame(body, bg=SURFACE)
         hdr.pack(fill="x", pady=(px(26), 0))
+        tk.Label(hdr, text="Pop-ups", font=font(12, "semibold"), fg=TEXT, bg=SURFACE).pack(side="left")
+        self._pill_button(hdr, "Show a test pop-up", lambda: self._show_toast("back"),
+                          GLYPHS["clock"]).pack(side="right")
+        tk.Label(body, text="A small reminder of today's wasted time in the top-left corner. It never takes "
+                            "focus, clicks pass through it, and it stays out of screen shares and recordings.",
+                 font=font(9), fg=MUTED, bg=SURFACE, anchor="w").pack(fill="x", pady=(px(4), px(10)))
+        self.popups_box = tk.Frame(body, bg=SURFACE)
+        self.popups_box.pack(fill="x")
+        self._fill_popups()
+
+        hdr = tk.Frame(body, bg=SURFACE)
+        hdr.pack(fill="x", pady=(px(26), 0))
         tk.Label(hdr, text="What counts as a distraction", font=font(12, "semibold"),
                  fg=TEXT, bg=SURFACE).pack(side="left")
         self._pill_button(hdr, "Reset to defaults", self._reset_rules, GLYPHS["reset"]).pack(side="right")
@@ -712,6 +725,45 @@ class Dashboard(tk.Tk):
         self.rules_box.pack(fill="x")
         self._build_add_form(body)
         self._fill_rules()
+
+    def _fill_popups(self):
+        box = self.popups_box
+        for c in box.winfo_children():
+            c.destroy()
+        s = load_settings()
+        mins = s["popup_reminder_minutes"]
+        items = [("popup_on_return", GLYPHS["clock"], ACCENT, "When I come back",
+                  "After unlocking or waking the laptop"),
+                 ("popup_on_distraction", GLYPHS["distracted"], COLORS["distracted"], "When I open a distraction",
+                  f"And again every {mins} minutes while I stay on it" if mins else "Once each time")]
+        for key, glyph, color, title, sub in items:
+            on = bool(s[key])
+            row = tk.Frame(box, bg=SURFACE, padx=px(8), pady=px(7))
+            row.pack(fill="x")
+            icon_badge(row, glyph, color if on else MUTED, SURFACE).pack(side="left")
+            text = tk.Frame(row, bg=SURFACE)
+            text.pack(side="left", padx=(px(12), 0), fill="x", expand=True)
+            tk.Label(text, text=title, font=font(10), fg=TEXT if on else MUTED, bg=SURFACE,
+                     anchor="w").pack(fill="x")
+            tk.Label(text, text=sub, font=font(9), fg=MUTED, bg=SURFACE, anchor="w").pack(fill="x")
+            tk.Label(row, text="On" if on else "Off", font=font(9), fg=TEXT2, bg=SURFACE,
+                     width=4, anchor="e").pack(side="right", padx=(0, px(44)))
+            self._toggle(row, on, lambda k=key: self._toggle_setting(k)).pack(side="right", padx=(px(8), px(6)))
+            hoverable(row, SURFACE, SURFACE_HI)
+
+    def _toggle_setting(self, key):
+        s = load_settings()
+        s[key] = not s[key]
+        save_settings(s)
+        self._fill_popups()
+
+    def _show_toast(self, kind, arg=""):
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "toast.pyw")
+        pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        try:
+            subprocess.Popen([pythonw, script, kind, arg], cwd=os.path.dirname(script))
+        except OSError:
+            pass
 
     def _pill_button(self, parent, text, command, glyph=None, primary=False):
         bg, hover, fg = (ACCENT, "#8fdcff", "#000000") if primary else (SURFACE_HI, "#3f3f3f", TEXT)
