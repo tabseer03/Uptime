@@ -8,7 +8,7 @@
 
 I wanted an honest answer to *"where did my day actually go?"*. Uptime runs quietly in the background on my Windows laptop. It adds up every minute the laptop is **locked, asleep, shut down**, or sitting on a **shopping or social media site**. Then it shows me the total in a big, unforgiving number.
 
-It turns out that seeing *"Wasted today: 6h 12m"* and *"Shopping · flipkart: 1h 40m this week"* is surprisingly good motivation to close the tab and get back to work. 😅
+It turns out that seeing *"Wasted today: 6h 12m"*, *"You waste 33% of your time"* and *"Shopping · flipkart: 1h 40m this week"* is surprisingly good motivation to close the tab and get back to work. 😅 Each morning it also asks what I want to get done that day, and reminds me what's left whenever I drift off.
 
 ![Overview](screenshots/v2_overview.png)
 
@@ -17,11 +17,11 @@ It turns out that seeing *"Wasted today: 6h 12m"* and *"Shopping · flipkart: 1h
 - **Tracks wasted time automatically.** It counts time locked (Win+L), asleep or shut down, and time on distracting apps or websites.
 - **Doesn't count your sleep.** Each morning, up to 8 hours of the night's laptop-off break counts as **Your sleep**, not wasted time (you can change the hours, or set 0 to turn it off). Stay up past that and the extra still counts.
 - **Catches distractions.** Shopping (Amazon, Flipkart, Myntra, Meesho…), social media (Instagram, Reddit…), streaming (Netflix, Hotstar…) and games count as **Distracted** time.
-- **Shows your history.** You get a 14-day chart, daily and weekly history, and a log of every break.
-- **Averages.** It shows average wasted time per day and per week.
+- **Shows your history.** You get a 14-day chart, daily and weekly history, and a log of every break. Each day shows how much of it you wasted, e.g. *"58% of 16h 00m tracked"*.
+- **Puts it in perspective.** The cards at the top turn hours into something that stings: *"You've wasted 26% of your time today"*, *"You waste 33% of your time"* on an average day, and *"That's 1.3 whole days a week"*.
 - **Asks about anything new.** The first time you use a new app or website, a small prompt asks *"Is this for work?"*. Answer **Not work** and time there counts as distracted from then on. Answer **Work** and you're never asked again. Websites are recognised by their real address (e.g. `leetcode.com`), not just the tab title. You can review and change your answers in the dashboard.
 - **Asks for today's goals.** The first time you're back each morning, a small window asks what you want to get done today. Add plain to-dos, or counters like *"5 practice questions"* that you tick off one at a time (2 / 5). Yesterday's unfinished goals are one click away. Tick things off in that window or any time in the dashboard's **Goals** tab, which also shows how earlier days went.
-- **Nudges you with a pop-up.** A small Windows-style pop-up in the top-left corner shows *"5h 12m wasted today"* when you come back to the laptop, when you open a distraction, and every 10 minutes while you stay on one. If you've set goals, it also shows what's left: *"Still to do: 3 practice questions, Read chapter 4"*. It never takes focus, clicks pass straight through it, and it doesn't appear in screen shares or recordings.
+- **Nudges you with a pop-up.** A small Windows-style pop-up in the top-left corner shows *"5h 12m wasted today"* when you come back to the laptop, when you open a distraction, and every 10 minutes while you stay on one. If you've set goals, it also lists everything that's left, over as many lines as it needs: *"Still to do: 3 practice questions, Read chapter 4"*. It never takes focus, clicks pass straight through it, and it doesn't appear in screen shares or recordings.
 - **Pauses on demand.** Pause for 3, 4 or 5 hours and Uptime switches off completely, with no tracking, no pop-ups and nothing running. It starts again by itself, and paused time doesn't count as wasted.
 - **Lets you set your own rules.** Turn categories on or off, or add your own sites and apps. YouTube, messaging and music start off, because they aren't always distractions.
 - **Looks like Windows 11.** It has a dark Windows 11-style dashboard, with smooth 144 Hz scrolling that works with precision touchpads too.
@@ -54,7 +54,7 @@ Tracking starts right away and runs at every login. Your data stays on your lapt
 - **Websites.** `src/siteinfo.py` reads the browser's address bar through Windows UI Automation, using only `ctypes`, to find the site you're on. It only reads when you switch windows or the page changes. Your answers live in `%USERPROFILE%\Uptime\labels.json` and take priority over the keyword rules.
 - **Pause.** The dashboard's **Pause** button writes the pause end time and registers a one-time Windows Task Scheduler entry to restart the tracker. The tracker notices the pause and exits. When it restarts, it records the gap as **Paused** and removes the scheduled task. Click **Resume now** in the dashboard to end a pause early.
 - **Dashboard.** `src/dashboard.pyw` is the dashboard, built with Tkinter and drawn to match Windows 11's dark theme.
-- **Averages.** They only use full days, meaning days that were at least 90% tracked, so a half-tracked first day doesn't skew them.
+- **Averages and percentages.** Averages only use full days, meaning days that were at least 90% tracked, so a half-tracked first day doesn't skew them. Percentages are out of your waking, tracked time: **Your sleep** and **Paused** time are left out, because neither can be wasted. The weekly card divides the average week by 24 hours to show how many whole days that is.
 
 ## Uninstall
 

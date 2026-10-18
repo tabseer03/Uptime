@@ -22,6 +22,7 @@ import math
 import subprocess
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from collections import deque
 from datetime import datetime, timedelta
 
@@ -88,6 +89,24 @@ def font(size, weight="", family="Segoe UI Variable Text"):
 
 
 ICON_FONT = "Segoe Fluent Icons"
+_FONTS = {}
+
+
+def one_line(text, fnt, width):
+    """Cut text short with … so it fits on one line in `width` pixels."""
+    if fnt not in _FONTS:
+        _FONTS[fnt] = tkfont.Font(font=fnt)
+    f = _FONTS[fnt]
+    if f.measure(text) <= width:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:   # longest prefix that fits with the …
+        mid = (lo + hi + 1) // 2
+        if f.measure(text[:mid].rstrip(" ·") + "…") <= width:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo].rstrip(" ·") + "…"
 
 
 def round_rect(c, x1, y1, x2, y2, r, **kw):
@@ -422,16 +441,17 @@ class CanvasList(SmoothScroller, tk.Frame):
         c.configure(scrollregion=(0, 0, w, len(self.rows) * rh))
         right = w - px(10) - px(14)              # right edge of the value column
         bar_x2 = right - px(self.VALUE_W) - px(16)
-        text_max = (bar_x2 - px(self.BAR_W) - px(16)) - px(62)
         for i, r in enumerate(self.rows):
             y = i * rh
             ty = y + (rh - px(34)) / 2
+            # the text runs up to the bar, or up to the value column when there's no bar
+            text_max = (bar_x2 - (px(self.BAR_W) + px(16) if r.get("bar") is not None else 0)) - px(62)
             round_rect(c, px(8), ty, px(42), ty + px(34), px(6), fill=SURFACE_HI, outline="")
             c.create_text(px(25), ty + px(17), text=r["glyph"], fill=r["color"], font=(ICON_FONT, 13))
-            c.create_text(px(62), y + rh / 2 - px(9), text=r["title"], anchor="w", fill=TEXT,
-                          font=font(10), width=text_max)
-            c.create_text(px(62), y + rh / 2 + px(10), text=r["subtitle"], anchor="w", fill=MUTED,
-                          font=font(9), width=text_max)
+            c.create_text(px(62), y + rh / 2 - px(9), text=one_line(r["title"], font(10), text_max),
+                          anchor="w", fill=TEXT, font=font(10))
+            c.create_text(px(62), y + rh / 2 + px(10), text=one_line(r["subtitle"], font(9), text_max),
+                          anchor="w", fill=MUTED, font=font(9))
             if r.get("value") is not None:
                 vy = y + rh / 2 - (px(9) if r.get("note") else 0)
                 c.create_text(right, vy, text=r["value"], anchor="e", fill=TEXT, font=font(11, "semibold"))
