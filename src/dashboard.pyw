@@ -26,9 +26,9 @@ from collections import deque
 from datetime import datetime, timedelta
 
 from common import (DEFAULT_RULES, GOALS_PATH, KIND_LABELS, NOT_WORK, WASTED_KINDS, WORK, connect, day_goals,
-                    detail_label, fmt_dur, goal_day, goal_done, key_name, load_goals, load_labels, load_pause,
-                    load_rules, load_settings, new_goal, save_label, save_pause, save_rules, save_settings,
-                    schedule_resume, summary, tracked, update_goals, wasted)
+                    detail_label, fmt_dur, goal_day, goal_done, is_complete_day, key_name, load_goals, load_labels,
+                    load_pause, load_rules, load_settings, new_goal, save_label, save_pause, save_rules,
+                    save_settings, schedule_resume, summary, tracked, update_goals, wasted)
 
 PREVIEW = bool(os.environ.get("WTT_DATA_DIR"))  # set by preview.pyw
 
@@ -363,7 +363,7 @@ class CanvasList(SmoothScroller, tk.Frame):
     bar (stats dict drawn as a 24h stacked bar).
     """
     ROW_H = 58
-    VALUE_W = 150
+    VALUE_W = 170
     BAR_W = 180
 
     def __init__(self, parent, bg):
@@ -1447,13 +1447,14 @@ class Dashboard(Window):
         d = self.data
         today = d["days"].get(d["today"], {})
 
-        note = self._breakdown(today, limit=2) or "Nothing wasted yet"
-        if today.get("rest", 0) >= 60:  # say how much sleep was left out
-            note = f"Not counting {fmt_dur(today['rest'])} of your sleep"
+        awake = self._awake(today)
+        note = "Nothing wasted yet"
+        if awake >= 60:
+            note = f"You've wasted {100 * wasted(today) / awake:.0f}% of your time today"
         self._set_card("today", fmt_dur(wasted(today)), note)
         self._set_card("active", fmt_dur(today.get("active", 0)), "Unlocked and not distracted")
-        self._set_card("avg_day", fmt_dur(d["avg_day"]), d["avg_day_basis"].capitalize())
-        self._set_card("avg_week", fmt_dur(d["avg_week"]), d["avg_week_basis"].capitalize())
+        self._set_card("avg_day", fmt_dur(d["avg_day"]), self._avg_share())
+        self._set_card("avg_week", fmt_dur(d["avg_week"]), f"That's {d['avg_week'] / 86400:.1f} whole days a week")
 
         pause = self._active_pause()
         self.pause_icon.config(text=GLYPHS["play"] if pause else GLYPHS["pause"])
@@ -1480,6 +1481,20 @@ class Dashboard(Window):
         if hasattr(self, "_job"):
             self.after_cancel(self._job)
         self._job = self.after(REFRESH_MS, self.refresh)
+
+    @staticmethod
+    def _awake(stats):
+        """Tracked time that could have been wasted: your sleep and pauses don't count."""
+        return tracked(stats) - stats.get("rest", 0) - stats.get("paused", 0)
+
+    def _avg_share(self):
+        """Share of tracked time wasted, over the same days as the daily average."""
+        days = self.data["days"]
+        used = [s for d, s in days.items() if is_complete_day(d, s, self.data["today"])] or list(days.values())
+        awake = sum(self._awake(s) for s in used)
+        if awake < 60:
+            return "No data yet"
+        return f"You waste {100 * sum(wasted(s) for s in used) / awake:.0f}% of your time"
 
     @staticmethod
     def _breakdown(stats, sep=" · ", limit=None):
@@ -1556,8 +1571,10 @@ class Dashboard(Window):
             if span - tr >= 600:
                 sub += f"  ·  Not tracked {fmt_dur(span - tr)}"
             title = "Today" if day == self.data["today"] else f"{day:%A, %d %B}"
+            awake = self._awake(s)
+            note = f"{100 * w / awake:.0f}% of {fmt_dur(awake)} tracked" if awake >= 60 else ""
             rows.append(dict(glyph=GLYPHS["calendar"], color=ACCENT, title=title, subtitle=sub,
-                             value=fmt_dur(w), note=f"{100 * w / tr:.0f}% of tracked" if tr else "", bar=s))
+                             value=fmt_dur(w), note=note, bar=s))
         self.daily_list.set_rows(rows, "No days tracked yet.")
 
     def _fill_weekly(self):
