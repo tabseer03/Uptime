@@ -1,7 +1,8 @@
 """A small on-screen pop-up with today's wasted time, like Windows' volume or "plugged in" OSD.
 
 Click-through, never takes focus, hidden from screen capture (see osd.py). It fades in at
-the top-left corner, stays a few seconds and fades away. The tracker starts it as a
+the top-left corner, stays a few seconds and fades away. If you've set goals for today, a
+few more lines show what's still left to do. The tracker starts it as a
 short-lived process:
 
     pythonw toast.pyw back [seconds_away]
@@ -13,16 +14,27 @@ import sys
 import time
 from ctypes import wintypes
 
-from datetime import datetime
+from common import connect, day_goals, fmt_dur, goals_left, load_pause, load_settings, morning_return, wasted_today
+from osd import ACCENT, FW_SEMIBOLD, MUTED, PINK, TEXT, OSDWindow, rgb, single_instance, user32
 
-from common import MIN_NIGHT, connect, fmt_dur, load_pause, load_settings, wasted_today
-from osd import (ACCENT, FW_SEMIBOLD, MUTED, PINK, TEXT, OSDWindow, rgb, single_instance, user32)
-
-RESTING = rgb("#a5a8ff")
+RESTING, GOOD = rgb("#a5a8ff"), rgb("#6ccb5f")
+MIN_TEXT_W = 320       # the "Still to do" list wraps onto more lines rather than widening the pop-up
+LINE_H = 19
 
 BACK_LINES = ["Welcome back", "Back at it", "There you are"]
 NUDGES = ["Is this worth it?", "Close it and get back to work", "This is going on your record",
           "Your future self is watching", "One more minute? Sure..."]
+
+
+def todo_line(kind):
+    """(label, [items], colour) for today's goals, or None if there's nothing to say."""
+    items = day_goals()["items"]
+    left = goals_left(items)
+    if left:
+        return "Still to do", left, TEXT
+    if items and kind == "back":
+        return "Goals", ["All done for today. Nice work!"], GOOD
+    return None
 
 
 def message(kind, arg):
@@ -41,7 +53,7 @@ def message(kind, arg):
     except ValueError:
         seconds = 0
     hours = load_settings().get("sleep_hours", 8)
-    if hours and seconds >= MIN_NIGHT and 4 <= datetime.now().hour < 14:
+    if hours and morning_return(seconds):
         slept = fmt_dur(min(seconds, hours * 3600))
         return "", RESTING, f"Good morning  ·  {slept} of sleep not counted", f"{total} wasted today"
     away = f"  ·  away {fmt_dur(seconds)}" if seconds >= 60 else ""
@@ -61,23 +73,49 @@ def below_other_popup(x, y, k):
 class Toast(OSDWindow):
     CLASS = "UptimeToast"
 
-    def __init__(self, glyph, color, small, big):
+    def __init__(self, glyph, color, small, big, todo=None):
         k = self.scale()
-        self.glyph, self.color, self.small, self.big = glyph, color, small, big
+        self.glyph, self.color, self.small, self.big, self.todo = glyph, color, small, big, todo
         self.f_small = self.font("Segoe UI Variable Text", 9, k=k)
         self.f_big = self.font("Segoe UI Variable Display", 15, FW_SEMIBOLD, k=k)
         self.f_icon = self.font("Segoe Fluent Icons", 15, k=k)
         text_w = max(self.measure(self.f_small, small), self.measure(self.f_big, big))
-        super().__init__(int((16 + 40 + 14 + 22) * k) + text_w, int(72 * k))
+        height = int(72 * k)
+        if todo:
+            text_w = max(text_w, int(MIN_TEXT_W * k))
+            self.label_w = self.measure(self.f_small, todo[0] + "  ")
+            self.lines = self.wrap(todo[1], text_w - self.label_w)
+            height = int((60 + LINE_H * len(self.lines) + 12) * k)
+        super().__init__(int((16 + 40 + 14 + 22) * k) + text_w, height)
+
+    def wrap(self, items, width):
+        """Lay out 'a, b, c' over as many lines as needed, keeping each item on one line if it fits."""
+        lines, cur = [], ""
+        for n, item in enumerate(items):
+            piece = item + ("," if n < len(items) - 1 else "")
+            for word in ([piece] if self.measure(self.f_small, piece) <= width else piece.split(" ")):
+                cand = f"{cur} {word}" if cur else word
+                if cur and self.measure(self.f_small, cand) > width:
+                    lines.append(cur)
+                    cand = word
+                cur = cand
+        return lines + [cur] if cur else lines
 
     def position(self):
         x, y = super().position()
         return below_other_popup(x, y, self.k)
 
     def draw(self, dc):
-        left = self.icon_tile(dc, self.glyph, self.color, self.f_icon)
+        left = self.icon_tile(dc, self.glyph, self.color, self.f_icon, top=self.px(16))
         self.text(dc, self.f_small, MUTED, self.small, wintypes.RECT(left, self.px(12), self.w, self.px(32)))
         self.text(dc, self.f_big, TEXT, self.big, wintypes.RECT(left, self.px(30), self.w, self.px(60)))
+        if self.todo:
+            label, _, color = self.todo
+            self.text(dc, self.f_small, ACCENT, label, wintypes.RECT(left, self.px(60), self.w, self.px(60 + LINE_H)))
+            for n, line in enumerate(self.lines):
+                y = self.px(60 + LINE_H * n)
+                self.text(dc, self.f_small, color, line,
+                          wintypes.RECT(left + self.label_w, y, self.w, y + self.px(LINE_H)))
 
 
 def main():
@@ -88,7 +126,7 @@ def main():
         return  # one pop-up at a time
     kind = sys.argv[1] if len(sys.argv) > 1 else "back"
     arg = sys.argv[2] if len(sys.argv) > 2 else None
-    Toast(*message(kind, arg)).run()
+    Toast(*message(kind, arg), todo=todo_line(kind)).run()
 
 
 if __name__ == "__main__":

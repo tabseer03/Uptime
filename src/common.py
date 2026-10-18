@@ -90,6 +90,7 @@ DEFAULT_SETTINGS = {
     "popup_reminder_minutes": 10,   # repeat while you stay on the distraction (0 = never)
     "ask_new": True,                # ask "is this for work?" for new apps and sites
     "sleep_hours": 8,               # this much of each night's break is your sleep, not wasted
+    "goals_morning": True,          # ask for today's goals the first time you're back each morning
 }
 
 
@@ -246,6 +247,75 @@ def save_label(key, value, name=None):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(labels, f, indent=2, sort_keys=True)
     os.replace(tmp, LABELS_PATH)
+
+
+# ---------------------------------------------------------------- daily goals
+# Your to-do list for each day. An item is {"id", "text", "target", "done"}: target 1 is a
+# plain checkbox, more is a counter you tick off step by step (e.g. 2 of 5 questions).
+# A day runs from 4 am to 4 am, so working past midnight still counts toward that day.
+GOALS_PATH = os.path.join(DATA_DIR, "goals.json")
+DAY_START_HOUR = 4
+MORNING_HOURS = (4, 14)     # coming back from the night's break in this window is "morning"
+
+
+def goal_day(ts=None):
+    return (datetime.fromtimestamp(ts or time.time()) - timedelta(hours=DAY_START_HOUR)).date()
+
+
+def morning_return(seconds_away, now=None):
+    """True if you're back from the night's break (at least 3 hours away, in the morning)."""
+    hour = datetime.fromtimestamp(now or time.time()).hour
+    return seconds_away >= MIN_NIGHT and MORNING_HOURS[0] <= hour < MORNING_HOURS[1]
+
+
+def load_goals():
+    """{'2026-10-18': {'asked': bool, 'items': [...]}} (asked: the morning prompt was shown)."""
+    try:
+        with open(GOALS_PATH, encoding="utf-8") as f:
+            goals = json.load(f)
+        return {k: v for k, v in goals.items() if isinstance(v, dict)} if isinstance(goals, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def day_goals(day=None, goals=None):
+    entry = (goals if goals is not None else load_goals()).get(str(day or goal_day()), {})
+    return {"asked": bool(entry.get("asked")),
+            "items": [i for i in entry.get("items", []) if isinstance(i, dict) and i.get("text")]}
+
+
+def update_goals(change, day=None):
+    """Load the day's goals, let change(entry) edit them in place, and save."""
+    goals = load_goals()
+    key = str(day or goal_day())
+    entry = day_goals(key, goals)
+    change(entry)
+    goals[key] = entry
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = GOALS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(goals, f, indent=2, sort_keys=True)
+    os.replace(tmp, GOALS_PATH)
+    return entry
+
+
+def new_goal(text, target=1):
+    """'5 practice questions' becomes a counter of 5 unless a count is given."""
+    text = " ".join(text.split())
+    first, _, rest = text.partition(" ")
+    if target == 1 and rest and first.isdigit() and 1 < int(first) <= 999:
+        target, text = int(first), rest
+    return {"id": os.urandom(4).hex(), "text": text, "target": max(1, int(target)), "done": 0}
+
+
+def goal_done(item):
+    return item.get("done", 0) >= item.get("target", 1)
+
+
+def goals_left(items):
+    """What's still to do, e.g. ['3 practice questions', 'Graphs']."""
+    return [f"{item['target'] - item.get('done', 0)} {item['text']}" if item.get("target", 1) > 1 else item["text"]
+            for item in items if not goal_done(item)]
 
 
 def detail_label(detail):

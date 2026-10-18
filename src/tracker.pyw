@@ -17,8 +17,8 @@ if "--data-dir" in sys.argv[:-1]:  # used by the scheduled restart for a non-def
 
 from common import (BROWSERS, DATA_DIR, HEARTBEAT_SECONDS, LABELS_PATH, MAX_GAP_SECONDS, NOT_WORK,
                     NOT_WORK_RULE, PAUSE_PATH, REBOOT_TOLERANCE, RULES_PATH, SETTINGS_PATH, WORK,
-                    answer_of, cancel_resume, clear_pause, connect, key_name, label_key, load_labels,
-                    load_pause, load_rules, load_settings, match_distraction)
+                    answer_of, cancel_resume, clear_pause, connect, day_goals, key_name, label_key, load_labels,
+                    load_pause, load_rules, load_settings, match_distraction, morning_return)
 from siteinfo import SiteReader, app_name
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -213,6 +213,20 @@ class Popups:
         self.away_since = None
         self.last_shown = 0.0
         self.script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "toast.pyw")
+        self.dashboard = os.path.join(os.path.dirname(self.script), "dashboard.pyw")
+
+    def ask_for_goals(self, away, now):
+        """First time back from the night's break: open the "today's goals" window, once a day."""
+        if not self.settings.current().get("goals_morning", True) or not morning_return(away, now):
+            return
+        today = day_goals()
+        if today["asked"] or today["items"]:
+            return
+        try:
+            subprocess.Popen([sys.executable, self.dashboard, "--morning"],
+                             cwd=os.path.dirname(self.dashboard), close_fds=True)
+        except OSError:
+            pass
 
     def show(self, *args):
         self.last_shown = time.time()
@@ -233,6 +247,7 @@ class Popups:
             return
         if self.away_since is not None:         # just came back
             away, self.away_since = now - self.away_since, None
+            self.ask_for_goals(away, now)
             if away >= self.MIN_AWAY and s["popup_on_return"]:
                 self.show("back", int(away))
                 return

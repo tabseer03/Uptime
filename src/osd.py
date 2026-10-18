@@ -214,9 +214,9 @@ class OSDWindow:
             gdi32.DeleteObject(brush)
         gdi32.DeleteObject(pen)
 
-    def icon_tile(self, dc, glyph, color, icon_font):
+    def icon_tile(self, dc, glyph, color, icon_font, top=None):
         t = self.px(40)
-        tx, ty = self.px(16), (self.h - t) // 2
+        tx, ty = self.px(16), (self.h - t) // 2 if top is None else top
         self.round_rect(dc, tx, ty, tx + t, ty + t, self.px(6), TILE)
         self.text(dc, icon_font, color, glyph, wintypes.RECT(tx, ty, tx + t, ty + t), DT_CENTER | DT_VCENTER)
         return tx + t + self.px(14)

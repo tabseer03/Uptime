@@ -1,6 +1,7 @@
 """Dashboard: today's wasted time, averages, and daily / weekly / break history.
 
-Styled after the Windows 11 dark theme (Start menu look).
+Styled after the Windows 11 dark theme (Start menu look). With --morning it opens the small
+"today's goals" window instead, which the tracker starts the first time you're back each morning.
 """
 import os
 import sys
@@ -16,6 +17,7 @@ if sys.stderr is None:
 
 import atexit
 import ctypes
+import hashlib
 import math
 import subprocess
 import time
@@ -23,9 +25,10 @@ import tkinter as tk
 from collections import deque
 from datetime import datetime, timedelta
 
-from common import (DEFAULT_RULES, KIND_LABELS, NOT_WORK, WASTED_KINDS, WORK, connect, detail_label, fmt_dur,
-                    key_name, load_labels, load_pause, load_rules, load_settings, save_label, save_pause,
-                    save_rules, save_settings, schedule_resume, summary, tracked, wasted)
+from common import (DEFAULT_RULES, GOALS_PATH, KIND_LABELS, NOT_WORK, WASTED_KINDS, WORK, connect, day_goals,
+                    detail_label, fmt_dur, goal_day, goal_done, key_name, load_goals, load_labels, load_pause,
+                    load_rules, load_settings, new_goal, save_label, save_pause, save_rules, save_settings,
+                    schedule_resume, summary, tracked, update_goals, wasted)
 
 PREVIEW = bool(os.environ.get("WTT_DATA_DIR"))  # set by preview.pyw
 
@@ -64,6 +67,7 @@ GLYPHS = {"sleep": "", "shutdown": "", "locked": "", "active": "",
 
 GLYPHS.update({"distracted": "", "site": "", "app": "", "delete": "",
                "add": "", "reset": "", "pause": "", "play": ""})
+GLYPHS.update({"goals": "", "check": "", "minus": "", "sun": ""})
 PAUSED = "#f9b24e"
 PAUSE_CHOICES = (3, 4, 5)  # hours
 
@@ -459,32 +463,245 @@ def icon_badge(parent, glyph, color, bg, size=34):
     return c
 
 
+def cap(text):
+    """'practice questions' -> 'Practice questions' (a counter's name, shown on its own)."""
+    return text[:1].upper() + text[1:]
+
+
+def pill_button(parent, text, command, glyph=None, primary=False):
+    bg, hover, fg = (ACCENT, "#8fdcff", "#000000") if primary else (SURFACE_HI, "#3f3f3f", TEXT)
+    btn = tk.Frame(parent, bg=bg, padx=px(12), pady=px(5))
+    if glyph:
+        tk.Label(btn, text=glyph, font=(ICON_FONT, 9), fg=fg, bg=bg).pack(side="left", padx=(0, px(8)))
+    tk.Label(btn, text=text, font=font(10), fg=fg, bg=bg).pack(side="left")
+    hoverable(btn, bg, hover, command)
+    return btn
+
+
+def stepper(parent, bg, text, on_minus, on_plus, width=5):
+    """[-] value [+], like the Settings app's number boxes."""
+    box = tk.Frame(parent, bg=bg)
+    for i, (glyph, command) in enumerate(((GLYPHS["minus"], on_minus), (GLYPHS["add"], on_plus))):
+        b = tk.Label(box, text=glyph, font=(ICON_FONT, 9), fg=TEXT, bg=SURFACE_HI, width=3, pady=px(5), cursor="hand2")
+        b.keep_bg = True
+        b.bind("<Button-1>", lambda e, c=command: c())
+        b.bind("<Enter>", lambda e, w=b: w.config(bg="#454545"))
+        b.bind("<Leave>", lambda e, w=b: w.config(bg=SURFACE_HI))
+        b.pack(side="left")
+        if i == 0:
+            tk.Label(box, text=text, font=font(10, "semibold"), fg=TEXT, bg=bg, width=width).pack(side="left")
+    return box
+
+
+class GoalsEditor(tk.Frame):
+    """Today's to-do list: a box to add goals, ideas from the last day you set any, and the list
+    with checkboxes. Used by the Goals tab and the morning window. Every change is saved straight
+    away, and each one picks up changes made in the other within a couple of seconds."""
+    POLL_MS = 1500
+    MAX_IDEAS = 6
+
+    def __init__(self, parent, bg, on_change=None):
+        super().__init__(parent, bg=bg)
+        self.bg, self.on_change = bg, on_change
+        self.day, self._mtime, self.count, self.items = goal_day(), None, 1, []
+
+        form = tk.Frame(self, bg=bg)
+        form.pack(fill="x")
+        form.columnconfigure(0, weight=1)
+        for col, text in ((0, "Add a goal"), (1, "How many")):
+            tk.Label(form, text=text, font=font(9), fg=MUTED, bg=bg, anchor="w").grid(
+                row=0, column=col, sticky="w", padx=(0, px(12)))
+        self.entry = tk.Entry(form, font=font(11), bg="#1f1f1f", fg=TEXT, insertbackground=TEXT, relief="flat",
+                              highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT)
+        self.entry.grid(row=1, column=0, sticky="ew", padx=(0, px(12)), ipady=px(6))
+        self.entry.bind("<Return>", lambda e: self._add())
+        self.count_box = tk.Frame(form, bg=bg)
+        self.count_box.grid(row=1, column=1, sticky="ns", padx=(0, px(12)))
+        self._fill_count()
+        pill_button(form, "Add", self._add, GLYPHS["add"], primary=True).grid(row=1, column=2, sticky="ns")
+        tip = tk.Label(self, text="Press Enter to add each one. Give a number for things you'll do several times, "
+                                  "like 5 practice questions, and tick them off one at a time.",
+                       font=font(9), fg=MUTED, bg=bg, anchor="w", justify="left")
+        tip.pack(fill="x", pady=(px(8), 0))
+        tip.bind("<Configure>", lambda e: tip.config(wraplength=e.width))
+        self.ideas = tk.Frame(self, bg=bg)
+        self.ideas.pack(fill="x")
+        self.list = tk.Frame(self, bg=bg)
+        self.list.pack(fill="x", pady=(px(12), 0))
+        self.reload()
+        self.after(self.POLL_MS, self._poll)
+
+    # ---- data
+    def reload(self):
+        self.day = goal_day()
+        try:
+            self._mtime = os.path.getmtime(GOALS_PATH)
+        except OSError:
+            self._mtime = None
+        goals = load_goals()
+        self.items = day_goals(self.day, goals)["items"]
+        self._fill_ideas(goals)
+        self._fill_list()
+        if self.on_change:
+            self.on_change(self.items, goals)
+
+    def _poll(self):
+        try:
+            mtime = os.path.getmtime(GOALS_PATH)
+        except OSError:
+            mtime = None
+        if mtime != self._mtime or goal_day() != self.day:
+            self.reload()
+        self.after(self.POLL_MS, self._poll)
+
+    def _change(self, change):
+        update_goals(change, self.day)
+        self.reload()
+
+    def _edit_item(self, item_id, change):
+        def apply(entry):
+            for item in entry["items"]:
+                if item.get("id") == item_id:
+                    change(item)
+        self._change(apply)
+
+    def _add(self, text=None, target=None):
+        typed = text is None
+        text = (self.entry.get() if typed else text).strip()
+        if not text:
+            return
+        goal = new_goal(text, self.count if typed else target)
+        self._change(lambda entry: entry["items"].append(goal))
+        if typed:
+            self.entry.delete(0, "end")
+            self.count = 1
+            self._fill_count()
+
+    def _toggle(self, item):
+        def change(it):
+            target, done = it.get("target", 1), it.get("done", 0)
+            if target > 1:   # counters tick on one step at a time
+                it["done"] = done + 1 if done < target else target - 1
+            else:
+                it["done"] = 0 if done >= target else 1
+        self._edit_item(item["id"], change)
+
+    def _step(self, item, d):
+        self._edit_item(item["id"], lambda it: it.update(done=max(0, min(it["target"], it.get("done", 0) + d))))
+
+    def _delete(self, item):
+        self._change(lambda entry: entry.update(items=[i for i in entry["items"] if i.get("id") != item["id"]]))
+
+    def _set_count(self, d):
+        self.count = max(1, min(99, self.count + d))
+        self._fill_count()
+
+    # ---- drawing
+    def _fill_count(self):
+        for c in self.count_box.winfo_children():
+            c.destroy()
+        stepper(self.count_box, self.bg, str(self.count), lambda: self._set_count(-1),
+                lambda: self._set_count(1), width=3).pack(fill="y", expand=True)
+
+    def _fill_ideas(self, goals):
+        """Quick-add chips for goals from the last day you set any (unfinished ones first)."""
+        for c in self.ideas.winfo_children():
+            c.destroy()
+        earlier = sorted((d for d in goals if d < str(self.day) and day_goals(d, goals)["items"]), reverse=True)
+        if not earlier:
+            return
+        have = {i["text"].lower() for i in self.items}
+        last = day_goals(earlier[0], goals)["items"]
+        ideas = [i for i in sorted(last, key=goal_done) if i["text"].lower() not in have][:self.MAX_IDEAS]
+        if not ideas:
+            return
+        d = datetime.strptime(earlier[0], "%Y-%m-%d").date()
+        when = "yesterday" if d == self.day - timedelta(days=1) else f"{d:%A %d %b}"
+        tk.Label(self.ideas, text=f"From {when} · click to add", font=font(9), fg=MUTED, bg=self.bg,
+                 anchor="w").pack(fill="x", pady=(px(12), px(6)))
+        rows = tk.Frame(self.ideas, bg=self.bg)
+        rows.pack(fill="x")
+        for n, item in enumerate(ideas):
+            text = cap(item["text"]) if len(item["text"]) <= 30 else cap(item["text"][:28]) + "…"
+            if item.get("target", 1) > 1:
+                text += f"  ×{item['target']}"
+            chip = tk.Frame(rows, bg=SURFACE_HI, padx=px(10), pady=px(4))
+            chip.grid(row=n // 3, column=n % 3, sticky="w", padx=(0, px(8)), pady=(0, px(6)))
+            tk.Label(chip, text=GLYPHS["add"], font=(ICON_FONT, 8), fg=ACCENT, bg=SURFACE_HI).pack(
+                side="left", padx=(0, px(6)))
+            tk.Label(chip, text=text, font=font(9), fg=TEXT if not goal_done(item) else TEXT2,
+                     bg=SURFACE_HI).pack(side="left")
+            hoverable(chip, SURFACE_HI, "#454545", lambda i=item: self._add(i["text"], i.get("target", 1)))
+
+    def _checkbox(self, parent, item):
+        s = px(20)
+        c = tk.Canvas(parent, width=s + 2, height=s + 2, bg=self.bg, highlightthickness=0, cursor="hand2")
+        c.follow_bg = True
+        target, done = item.get("target", 1), min(item.get("done", 0), item.get("target", 1))
+        counter = target > 1
+        if done >= target:
+            if counter:
+                c.create_oval(1, 1, s, s, fill=ACCENT, outline=ACCENT)
+            else:
+                round_rect(c, 1, 1, s, s, px(4), fill=ACCENT, outline=ACCENT)
+            c.create_text(s / 2 + 1, s / 2 + 1, text=GLYPHS["check"], font=(ICON_FONT, 10), fill="#000000")
+        elif counter:   # a ring that fills up as you go
+            c.create_oval(2, 2, s - 1, s - 1, outline="#9a9a9a", width=px(1.5))
+            if done:
+                c.create_arc(2, 2, s - 1, s - 1, start=90, extent=-359.9 * done / target, style="arc",
+                             outline=ACCENT, width=px(2.5))
+        else:
+            round_rect(c, 1, 1, s, s, px(4), fill="", outline="#9a9a9a")
+        return c
+
+    def _fill_list(self):
+        box = self.list
+        for c in box.winfo_children():
+            c.destroy()
+        if not self.items:
+            tk.Label(box, text="Nothing here yet. What do you want to get done today?", font=font(10),
+                     fg=MUTED, bg=self.bg, anchor="w").pack(fill="x", padx=px(8), pady=px(10))
+            return
+        for item in self.items:
+            done, target = goal_done(item), item.get("target", 1)
+            row = tk.Frame(box, bg=self.bg, padx=px(8), pady=px(6))
+            row.pack(fill="x")
+            check = self._checkbox(row, item)
+            check.pack(side="left")
+            delete = tk.Label(row, text=GLYPHS["delete"], font=(ICON_FONT, 11), fg=MUTED, bg=self.bg,
+                              padx=px(10), pady=px(4), cursor="hand2")
+            delete.pack(side="right")
+            delete.bind("<Button-1>", lambda e, i=item: self._delete(i))
+            delete.bind("<Enter>", lambda e, w=delete: w.config(fg=BAD))
+            delete.bind("<Leave>", lambda e, w=delete: w.config(fg=MUTED))
+            if target > 1:
+                stepper(row, self.bg, f"{min(item.get('done', 0), target)} / {target}",
+                        lambda i=item: self._step(i, -1), lambda i=item: self._step(i, 1),
+                        width=7).pack(side="right", padx=(0, px(10)))
+            title = tk.Label(row, text=cap(item["text"]), font=font(10) + (("overstrike",) if done else ()),
+                             fg=MUTED if done else TEXT, bg=self.bg, anchor="w", cursor="hand2")
+            title.pack(side="left", fill="x", expand=True, padx=(px(12), 0))
+            for w in (check, title):
+                w.bind("<Button-1>", lambda e, i=item: self._toggle(i))
+            hoverable(row, self.bg, SURFACE_HI)
+
+
 # ------------------------------------------------------------------ app
-class Dashboard(tk.Tk):
-    def __init__(self):
+class Window(tk.Tk):
+    """A top-level Uptime window: DPI scaling, dark title bar and the app icon."""
+
+    def __init__(self, title):
         super().__init__()
         global K
         K = self.winfo_fpixels("1i") / 96.0
-        self.title("Uptime (preview)" if PREVIEW else "Uptime")
+        self.title(title)
         self.configure(bg=BG)
-        w, h = px(1040), min(px(820), self.winfo_screenheight() - px(80))
-        self.geometry(f"{w}x{h}+{(self.winfo_screenwidth() - w) // 2}+{max(0, (self.winfo_screenheight() - h) // 2 - px(20))}")
-        self.minsize(px(860), px(620))
-        self.tab = "overview"
 
-        self._build_header()
-        self._build_cards()
-        self._build_nav()
-        self.page = tk.Frame(self, bg=BG)
-        self.page.pack(fill="both", expand=True, padx=px(28), pady=(0, px(24)))
-        self._build_pages()
-
+    def _decorate(self):
         self.update_idletasks()
         self._dark_titlebar()
         if os.path.exists(ICON_PATH):
             self.iconbitmap(default=ICON_PATH)
-        self.refresh()
-        self._bring_to_front()
 
     def _bring_to_front(self):
         self.deiconify()
@@ -505,6 +722,66 @@ class Dashboard(tk.Tk):
             ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x27)   # redraw frame
         except Exception:
             pass
+
+
+class MorningGoals(Window):
+    """Opens the first time you're back from the night's break: what do you want to do today?"""
+
+    def __init__(self):
+        super().__init__("Uptime · Today's goals")
+        w, h = px(620), min(px(660), self.winfo_screenheight() - px(80))
+        self.geometry(f"{w}x{h}+{(self.winfo_screenwidth() - w) // 2}+{max(0, (self.winfo_screenheight() - h) // 2 - px(20))}")
+        self.minsize(px(500), px(460))
+        update_goals(lambda entry: entry.update(asked=True))  # once a day, even if closed straight away
+
+        head = tk.Frame(self, bg=BG)
+        head.pack(fill="x", padx=px(28), pady=(px(24), px(16)))
+        tk.Label(head, text=GLYPHS["sun"], font=(ICON_FONT, 22), fg=PAUSED, bg=BG).pack(side="left")
+        titles = tk.Frame(head, bg=BG)
+        titles.pack(side="left", padx=(px(14), 0))
+        hello = "Good morning" if datetime.now().hour < 12 else "Good afternoon"
+        tk.Label(titles, text=hello, font=font(20, "semibold", "Segoe UI Variable Display"), fg=TEXT,
+                 bg=BG).pack(anchor="w")
+        tk.Label(titles, text=f"{datetime.now():%A, %d %B}  ·  What do you want to get done today?",
+                 font=font(10), fg=MUTED, bg=BG).pack(anchor="w")
+
+        foot = tk.Frame(self, bg=BG)
+        foot.pack(side="bottom", fill="x", padx=px(28), pady=(px(14), px(22)))
+        pill_button(foot, "Start my day", self.destroy, GLYPHS["play"], primary=True).pack(side="right")
+        tk.Label(foot, text="What's left shows up in the pop-ups and in Uptime's Goals tab.", font=font(9),
+                 fg=MUTED, bg=BG).pack(side="left")
+
+        card = Card(self, fit=False, pad=18)
+        card.pack(fill="both", expand=True, padx=px(28))
+        lst = ScrollList(card.inner, SURFACE)
+        lst.pack(fill="both", expand=True)
+        self.editor = GoalsEditor(lst.body, SURFACE)
+        self.editor.pack(fill="x")
+        self.bind("<Escape>", lambda e: self.destroy())
+
+        self._decorate()
+        self._bring_to_front()
+        self.after(100, self.editor.entry.focus_force)
+
+
+class Dashboard(Window):
+    def __init__(self):
+        super().__init__("Uptime (preview)" if PREVIEW else "Uptime")
+        w, h = px(1040), min(px(820), self.winfo_screenheight() - px(80))
+        self.geometry(f"{w}x{h}+{(self.winfo_screenwidth() - w) // 2}+{max(0, (self.winfo_screenheight() - h) // 2 - px(20))}")
+        self.minsize(px(860), px(620))
+        self.tab = "overview"
+
+        self._build_header()
+        self._build_cards()
+        self._build_nav()
+        self.page = tk.Frame(self, bg=BG)
+        self.page.pack(fill="both", expand=True, padx=px(28), pady=(0, px(24)))
+        self._build_pages()
+
+        self._decorate()
+        self.refresh()
+        self._bring_to_front()
 
     # -------------------------------------------------------- header & cards
     def _build_header(self):
@@ -581,7 +858,7 @@ class Dashboard(tk.Tk):
         nav = tk.Frame(self, bg=BG)
         nav.pack(fill="x", padx=px(22), pady=(px(22), px(12)))
         self.nav_items = {}
-        for key, label in [("overview", "Overview"), ("daily", "Daily"),
+        for key, label in [("overview", "Overview"), ("goals", "Goals"), ("daily", "Daily"),
                            ("weekly", "Weekly"), ("distractions", "Distractions"),
                            ("breaks", "Breaks")]:
             item = tk.Frame(nav, bg=BG, padx=px(8))
@@ -667,6 +944,7 @@ class Dashboard(tk.Tk):
             self.pages[key] = frame
             setattr(self, f"{key}_list", lst)
         self._build_distractions_page()
+        self._build_goals_page()
         self.show("overview")
 
     def _legend(self, parent, bg):
@@ -722,8 +1000,9 @@ class Dashboard(tk.Tk):
         tk.Label(hdr, text="Pop-ups", font=font(12, "semibold"), fg=TEXT, bg=SURFACE).pack(side="left")
         self._pill_button(hdr, "Show a test pop-up", lambda: self._show_toast("back"),
                           GLYPHS["clock"]).pack(side="right")
-        tk.Label(body, text="A small reminder of today's wasted time in the top-left corner. It never takes "
-                            "focus, clicks pass through it, and it stays out of screen shares and recordings.",
+        tk.Label(body, text="A small reminder of today's wasted time and what's left of your goals, in the top-left "
+                            "corner. It never takes focus, clicks pass through it, and it stays out of screen shares "
+                            "and recordings.",
                  font=font(9), fg=MUTED, bg=SURFACE, anchor="w").pack(fill="x", pady=(px(4), px(10)))
         self.popups_box = tk.Frame(body, bg=SURFACE)
         self.popups_box.pack(fill="x")
@@ -754,6 +1033,62 @@ class Dashboard(tk.Tk):
         self.rules_box.pack(fill="x")
         self._build_add_form(body)
         self._fill_rules()
+
+    # -------------------------------------------------------- goals page
+    def _build_goals_page(self):
+        frame = tk.Frame(self.page, bg=BG)
+        self.pages["goals"] = frame
+        card = Card(frame, fit=False, pad=18)
+        card.pack(fill="both", expand=True)
+        lst = ScrollList(card.inner, SURFACE)
+        lst.pack(fill="both", expand=True)
+        body = lst.body
+
+        hdr = tk.Frame(body, bg=SURFACE)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="Today's goals", font=font(12, "semibold"), fg=TEXT, bg=SURFACE).pack(side="left")
+        self.goals_progress = tk.Label(hdr, text="", font=font(10), fg=TEXT2, bg=SURFACE)
+        self.goals_progress.pack(side="right", padx=(0, px(14)))
+        tk.Label(body, text="Tick things off as you go. Whatever's left shows up in the pop-ups when you come "
+                            "back to the laptop or open a distraction.",
+                 font=font(9), fg=MUTED, bg=SURFACE, anchor="w").pack(fill="x", pady=(px(4), px(12)))
+        self.past_goals = None
+        GoalsEditor(body, SURFACE, on_change=self._goals_changed).pack(fill="x")
+
+        tk.Label(body, text="Earlier days", font=font(12, "semibold"), fg=TEXT, bg=SURFACE,
+                 anchor="w").pack(fill="x", pady=(px(26), px(8)))
+        self.past_goals = tk.Frame(body, bg=SURFACE)
+        self.past_goals.pack(fill="x")
+        self._goals_changed(day_goals()["items"], load_goals())
+
+    def _goals_changed(self, items, goals):
+        done = sum(goal_done(i) for i in items)
+        self.goals_progress.config(text=f"{done} of {len(items)} done" if items else "",
+                                   fg=GOOD if items and done == len(items) else TEXT2)
+        box = self.past_goals
+        if box is None:
+            return
+        for c in box.winfo_children():
+            c.destroy()
+        today = str(goal_day())
+        days = [d for d in sorted(goals, reverse=True) if d < today and day_goals(d, goals)["items"]][:14]
+        if not days:
+            tk.Label(box, text="Goals from earlier days will show up here.", font=font(10), fg=MUTED,
+                     bg=SURFACE, anchor="w").pack(fill="x", padx=px(8), pady=px(6))
+            return
+        for d in days:
+            its = day_goals(d, goals)["items"]
+            n = sum(goal_done(i) for i in its)
+            parts = [f"{cap(i['text'])} {min(i.get('done', 0), i['target'])}/{i['target']}" if i.get("target", 1) > 1
+                     else ("✓ " if goal_done(i) else "✗ ") + cap(i["text"]) for i in its]
+            sub = "  ·  ".join(parts)
+            if len(sub) > 110:
+                sub = sub[:108].rstrip(" ·") + "…"
+            day = datetime.strptime(d, "%Y-%m-%d")
+            row = self._row(box, GLYPHS["goals"], GOOD if n == len(its) else ACCENT, f"{day:%A, %d %B}", sub,
+                            f"{n} / {len(its)}", "done")
+            row.pack(fill="x")
+            hoverable(row, SURFACE, SURFACE_HI)
 
     # -------------------------------------------------------- pause
     def _app_file(self, name):
@@ -859,6 +1194,8 @@ class Dashboard(tk.Tk):
                   "After unlocking or waking the laptop"),
                  ("popup_on_distraction", GLYPHS["distracted"], COLORS["distracted"], "When I open a distraction",
                   f"And again every {mins} minutes while I stay on it" if mins else "Once each time"),
+                 ("goals_morning", GLYPHS["sun"], PAUSED, "Ask for my goals each morning",
+                  "The first time I'm back after the night's break"),
                  ("ask_new", GLYPHS["site"], ACCENT, "Ask about new apps and sites",
                   "“Is this for work?” the first time you use something new")]
         for key, glyph, color, title, sub in items:
@@ -970,14 +1307,7 @@ class Dashboard(tk.Tk):
         except OSError:
             pass
 
-    def _pill_button(self, parent, text, command, glyph=None, primary=False):
-        bg, hover, fg = (ACCENT, "#8fdcff", "#000000") if primary else (SURFACE_HI, "#3f3f3f", TEXT)
-        btn = tk.Frame(parent, bg=bg, padx=px(12), pady=px(5))
-        if glyph:
-            tk.Label(btn, text=glyph, font=(ICON_FONT, 9), fg=fg, bg=bg).pack(side="left", padx=(0, px(8)))
-        tk.Label(btn, text=text, font=font(10), fg=fg, bg=bg).pack(side="left")
-        hoverable(btn, bg, hover, command)
-        return btn
+    _pill_button = staticmethod(pill_button)
 
     def _toggle(self, parent, on, command):
         """Windows 11 style on/off switch."""
@@ -1354,9 +1684,24 @@ class Dashboard(tk.Tk):
             self._draw_chart(hover)
 
 
+def main():
+    if "--morning" not in sys.argv:
+        Dashboard().mainloop()
+        return
+    # The tracker opens the goals window with --morning: skip it while paused, and never show two.
+    pause = load_pause()
+    if pause and time.time() < pause["until"]:
+        return
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW(None, False, "Local\\UptimeGoals_" + hashlib.md5(DATA_DIR.lower().encode()).hexdigest()[:12])
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        return
+    MorningGoals().mainloop()
+
+
 if __name__ == "__main__":
     try:
-        Dashboard().mainloop()
+        main()
     except Exception:
         # pythonw has no console, so record the error and tell the user where it is.
         import os
