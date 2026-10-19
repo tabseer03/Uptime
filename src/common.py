@@ -3,6 +3,8 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -19,6 +21,34 @@ REBOOT_TOLERANCE = 120      # boot-time difference that means a restart happened
 WASTED_KINDS = ("sleep", "shutdown", "locked", "distracted")
 KIND_LABELS = {"sleep": "Laptop asleep", "shutdown": "Shut down", "locked": "Locked",
                "distracted": "Distracted", "active": "Active", "paused": "Paused", "rest": "Your sleep"}
+
+# ---------------------------------------------------------------- starting parts of Uptime
+# Uptime is a few small programs (tracker, pop-ups, dashboard) that start each other. From
+# source each is a .pyw script run by pythonw; in the single Uptime.exe they're one program
+# told which part to be: Uptime.exe --tracker, --toast, --ask or --morning.
+FROZEN = getattr(sys, "frozen", False)
+APP_DIR = os.path.dirname(sys.executable if FROZEN else os.path.abspath(__file__))
+SCRIPTS = {"tracker": "tracker.pyw", "toast": "toast.pyw", "ask": "ask.pyw", "morning": "dashboard.pyw"}
+
+
+def command(part, *args):
+    """The command line that runs one part of Uptime ('tracker', 'toast', 'ask', 'morning')."""
+    args = [str(a) for a in args]
+    if FROZEN:
+        return [sys.executable, f"--{part}", *args]
+    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    extra = ["--morning"] if part == "morning" else []
+    return [pythonw, os.path.join(APP_DIR, SCRIPTS[part]), *extra, *args]
+
+
+def start(part, *args):
+    """Start one part of Uptime in the background. True if it started."""
+    try:
+        subprocess.Popen(command(part, *args), cwd=APP_DIR, close_fds=True)
+        return True
+    except OSError:
+        return False
+
 
 # ---------------------------------------------------------------- distraction rules
 # "site" rules match the title of the active browser tab; "app" rules match the program's
@@ -151,7 +181,6 @@ def clear_pause():
 
 
 def _powershell(script):
-    import subprocess
     try:
         return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
                               capture_output=True, text=True, timeout=60,
@@ -160,16 +189,17 @@ def _powershell(script):
         return False
 
 
-def schedule_resume(at, pythonw, tracker):
+def schedule_resume(at):
     """One-time task that starts the tracker at `at` (runs late if the laptop was asleep/off)."""
     when = datetime.fromtimestamp(at).strftime("%Y-%m-%dT%H:%M:%S")
     q = lambda s: s.replace("'", "''")  # noqa: E731  (PowerShell single-quote escaping)
-    args = f'"{tracker}"'
+    cmd = command("tracker")
     if os.environ.get("WTT_DATA_DIR"):  # a task can't carry environment variables, so pass it on
-        args += f' --data-dir "{DATA_DIR}"'
+        cmd += ["--data-dir", DATA_DIR]
+    args = subprocess.list2cmdline(cmd[1:])
     return _powershell(
-        f"$a = New-ScheduledTaskAction -Execute '{q(pythonw)}' -Argument '{q(args)}' "
-        f"-WorkingDirectory '{q(os.path.dirname(tracker))}'; "
+        f"$a = New-ScheduledTaskAction -Execute '{q(cmd[0])}' -Argument '{q(args)}' "
+        f"-WorkingDirectory '{q(APP_DIR)}'; "
         f"$t = New-ScheduledTaskTrigger -Once -At ([datetime]'{when}'); "
         "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
         "-StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero); "
@@ -201,7 +231,7 @@ IGNORED_APPS = {
     "explorer", "searchhost", "searchapp", "searchui", "startmenuexperiencehost", "shellexperiencehost",
     "shellhost", "lockapp", "logonui", "textinputhost", "applicationframehost", "taskmgr", "dwm",
     "systemsettings", "rundll32", "consent", "openwith", "pickerhost", "sihost", "ctfmon",
-    "python", "pythonw", "py", "pyw", "notificationcenter", "widgets", "winlogon", "screenclippinghost",
+    "python", "pythonw", "py", "pyw", "uptime", "notificationcenter", "widgets", "winlogon", "screenclippinghost",
 }
 
 

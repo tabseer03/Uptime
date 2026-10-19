@@ -19,7 +19,6 @@ import atexit
 import ctypes
 import hashlib
 import math
-import subprocess
 import time
 import tkinter as tk
 import tkinter.font as tkfont
@@ -29,7 +28,7 @@ from datetime import datetime, timedelta
 from common import (DEFAULT_RULES, GOALS_PATH, KIND_LABELS, NOT_WORK, WASTED_KINDS, WORK, connect, day_goals,
                     detail_label, fmt_dur, goal_day, goal_done, is_complete_day, key_name, load_goals, load_labels,
                     load_pause, load_rules, load_settings, new_goal, save_label, save_pause, save_rules,
-                    save_settings, schedule_resume, summary, tracked, update_goals, wasted)
+                    save_settings, schedule_resume, start, summary, tracked, update_goals, wasted)
 
 PREVIEW = bool(os.environ.get("WTT_DATA_DIR"))  # set by preview.pyw
 
@@ -1111,12 +1110,6 @@ class Dashboard(Window):
             hoverable(row, SURFACE, SURFACE_HI)
 
     # -------------------------------------------------------- pause
-    def _app_file(self, name):
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
-
-    def _pythonw(self):
-        return os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-
     def _pause_clicked(self):
         if self._active_pause():
             self._resume_now()
@@ -1183,7 +1176,7 @@ class Dashboard(Window):
         start = time.time()
         until = start + self.pause_hours * 3600
         save_pause(start, until)                      # the tracker sees this and stops itself
-        ok = schedule_resume(until, self._pythonw(), self._app_file("tracker.pyw"))
+        ok = schedule_resume(until)
         if ok:
             self.destroy()                            # turn the dashboard off too
             return
@@ -1196,11 +1189,7 @@ class Dashboard(Window):
         p = load_pause()
         if p:
             save_pause(p.get("start", time.time()), time.time())  # pause ends now
-        try:
-            subprocess.Popen([self._pythonw(), self._app_file("tracker.pyw")],
-                             cwd=os.path.dirname(self._app_file("tracker.pyw")))
-        except OSError:
-            pass
+        start("tracker")
         self._draw_status("Starting…", GOOD)
         self.after(2500, self.refresh)
 
@@ -1320,12 +1309,7 @@ class Dashboard(Window):
         self._fill_popups()
 
     def _show_toast(self, kind, arg=""):
-        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "toast.pyw")
-        pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-        try:
-            subprocess.Popen([pythonw, script, kind, arg], cwd=os.path.dirname(script))
-        except OSError:
-            pass
+        start("toast", kind, arg)
 
     _pill_button = staticmethod(pill_button)
 
@@ -1736,12 +1720,11 @@ def main():
     MorningGoals().mainloop()
 
 
-if __name__ == "__main__":
+def run():
     try:
         main()
     except Exception:
         # pythonw has no console, so record the error and tell the user where it is.
-        import os
         import traceback
         from tkinter import messagebox
         log = os.path.join(DATA_DIR, "error.log")
@@ -1750,3 +1733,7 @@ if __name__ == "__main__":
             f.write(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}]\n{traceback.format_exc()}")
         messagebox.showerror("Uptime", f"Uptime couldn't start.\n\nDetails were saved to:\n{log}")
         raise
+
+
+if __name__ == "__main__":
+    run()

@@ -7,7 +7,6 @@ shutdown) shows up as gaps, which the dashboard counts as wasted time.
 import ctypes
 import hashlib
 import os
-import subprocess
 import sys
 import time
 from ctypes import wintypes
@@ -18,7 +17,7 @@ if "--data-dir" in sys.argv[:-1]:  # used by the scheduled restart for a non-def
 from common import (BROWSERS, DATA_DIR, HEARTBEAT_SECONDS, LABELS_PATH, MAX_GAP_SECONDS, NOT_WORK,
                     NOT_WORK_RULE, PAUSE_PATH, REBOOT_TOLERANCE, RULES_PATH, SETTINGS_PATH, WORK,
                     answer_of, cancel_resume, clear_pause, connect, day_goals, key_name, label_key, load_labels,
-                    load_pause, load_rules, load_settings, match_distraction, morning_return)
+                    load_pause, load_rules, load_settings, match_distraction, morning_return, start)
 from siteinfo import SiteReader, app_name
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -187,7 +186,6 @@ class Asker:
         self.ctx = ctx
         self.asked = {}
         self.last = 0.0
-        self.script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ask.pyw")
 
     def update(self, ask, now):
         if not ask or not self.ctx.settings.current().get("ask_new", True):
@@ -196,11 +194,7 @@ class Asker:
         if now - self.last < self.MIN_GAP or now - self.asked.get(key, 0) < self.AGAIN_AFTER:
             return
         self.asked[key] = self.last = now
-        try:
-            subprocess.Popen([sys.executable, self.script, key, name],
-                             cwd=os.path.dirname(self.script), close_fds=True)
-        except OSError:
-            pass
+        start("ask", key, name)
 
 
 class Popups:
@@ -212,29 +206,18 @@ class Popups:
         self.settings = ctx.settings
         self.away_since = None
         self.last_shown = 0.0
-        self.script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "toast.pyw")
-        self.dashboard = os.path.join(os.path.dirname(self.script), "dashboard.pyw")
 
     def ask_for_goals(self, away, now):
         """First time back from the night's break: open the "today's goals" window, once a day."""
         if not self.settings.current().get("goals_morning", True) or not morning_return(away, now):
             return
         today = day_goals()
-        if today["asked"] or today["items"]:
-            return
-        try:
-            subprocess.Popen([sys.executable, self.dashboard, "--morning"],
-                             cwd=os.path.dirname(self.dashboard), close_fds=True)
-        except OSError:
-            pass
+        if not today["asked"] and not today["items"]:
+            start("morning")
 
     def show(self, *args):
         self.last_shown = time.time()
-        try:
-            subprocess.Popen([sys.executable, self.script, *map(str, args)],
-                             cwd=os.path.dirname(self.script), close_fds=True)
-        except OSError:
-            pass
+        start("toast", *args)
 
     def update(self, prev, state, detail, now, continuous):
         """prev is the previous (state, detail, end time) or None."""

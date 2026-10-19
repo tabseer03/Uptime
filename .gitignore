@@ -7,3 +7,6 @@ __pycache__/
 *.db-journal
 rules.json
 *.log
+
+# Built by "Build Uptime.exe.cmd"
+dist/

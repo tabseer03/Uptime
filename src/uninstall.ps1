@@ -2,9 +2,9 @@
 # in %USERPROFILE%\Uptime unless you pass -DeleteData.
 param([switch]$DeleteData)
 
-Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe'" |
-    Where-Object { $_.CommandLine -match 'Uptime\\app.*tracker\.pyw' } |
-    ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe' or Name = 'Uptime.exe'" |
+    Where-Object { $_.CommandLine -match 'Uptime\\app.*tracker\.pyw' -or $_.ExecutablePath -match 'Uptime\\app\\Uptime\.exe$' } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
 Remove-Item -Force -ErrorAction SilentlyContinue `
     (Join-Path ([Environment]::GetFolderPath('Startup'))  'Uptime (background).lnk'),

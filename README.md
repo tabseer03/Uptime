@@ -34,13 +34,23 @@ It turns out that seeing *"Wasted today: 6h 12m"*, *"You waste 33% of your time"
 
 ## Install
 
-You need **Windows 10/11** and **Python 3** from [python.org](https://www.python.org/), with "Add to PATH" ticked. Uptime uses only Python's built-in libraries.
+You need **Windows 10/11**. There are two ways to install it:
+
+**As a single .exe** (no Python needed to run it)
+
+1. Get `Uptime.exe`: build it by double-clicking **`Build Uptime.exe.cmd`** (this needs Python 3 once, just for building), which puts it in `dist\`.
+2. Double-click **`Uptime.exe`**. It installs itself to `%USERPROFILE%\Uptime\app`, adds the shortcuts and starts tracking.
+3. Open **Uptime** from your Desktop or the Start menu. To update later, run a newer `Uptime.exe` the same way.
+
+Windows SmartScreen may warn about an unsigned app the first time. Click **More info → Run anyway**.
+
+**From source** (needs **Python 3** from [python.org](https://www.python.org/), with "Add to PATH" ticked)
 
 1. Download or clone this repo.
 2. Double-click **`Install Uptime.cmd`**.
 3. Open **Uptime** from your Desktop or the Start menu.
 
-Tracking starts right away and runs at every login. Your data stays on your laptop, in `%USERPROFILE%\Uptime`.
+Either way, tracking starts right away and runs at every login. Uptime uses only Python's built-in libraries, and your data stays on your laptop, in `%USERPROFILE%\Uptime`. Switching between the two keeps all your history and settings.
 
 ## How it works
 
@@ -54,6 +64,7 @@ Tracking starts right away and runs at every login. Your data stays on your lapt
 - **Websites.** `src/siteinfo.py` reads the browser's address bar through Windows UI Automation, using only `ctypes`, to find the site you're on. It only reads when you switch windows or the page changes. Your answers live in `%USERPROFILE%\Uptime\labels.json` and take priority over the keyword rules.
 - **Pause.** The dashboard's **Pause** button writes the pause end time and registers a one-time Windows Task Scheduler entry to restart the tracker. The tracker notices the pause and exits. When it restarts, it records the gap as **Paused** and removes the scheduled task. Click **Resume now** in the dashboard to end a pause early.
 - **Dashboard.** `src/dashboard.pyw` is the dashboard, built with Tkinter and drawn to match Windows 11's dark theme.
+- **The .exe.** `src/build.ps1` bundles everything into one file with [PyInstaller](https://pyinstaller.org/), which is installed into a private build folder (`%USERPROFILE%\.uptime-build`), not into your Python. `src/uptime.py` is its entry point: `Uptime.exe` opens the dashboard, and `--tracker`, `--toast`, `--ask` and `--morning` run the other parts, so the parts start each other the same way they do from source. On first run, `src/installer.py` copies the exe into place and points the shortcuts at it.
 - **Averages and percentages.** Averages only use full days, meaning days that were at least 90% tracked, so a half-tracked first day doesn't skew them. Percentages are out of your waking, tracked time: **Your sleep** and **Paused** time are left out, because neither can be wasted. The weekly card divides the average week by 24 hours to show how many whole days that is.
 
 ## Uninstall
