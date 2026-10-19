@@ -38,7 +38,7 @@ You need **Windows 10/11**. There are two ways to install it:
 
 **As a single .exe** (no Python needed to run it)
 
-1. Get `Uptime.exe`: build it by double-clicking **`Build Uptime.exe.cmd`** (this needs Python 3 once, just for building), which puts it in `dist\`.
+1. **[Download Uptime.exe](https://github.com/tabseer03/Uptime/releases/latest/download/Uptime.exe)** from the [latest release](https://github.com/tabseer03/Uptime/releases/latest). Or build it yourself by double-clicking **`Build Uptime.exe.cmd`** (this needs Python 3, just for building), which puts it in `dist\`.
 2. Double-click **`Uptime.exe`**. It installs itself to `%USERPROFILE%\Uptime\app`, adds the shortcuts and starts tracking.
 3. Open **Uptime** from your Desktop or the Start menu. To update later, run a newer `Uptime.exe` the same way.
 
